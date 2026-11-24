@@ -124,7 +124,21 @@ apiRouter.post('/chat', async (req, res) => {
   };
 
   const rawMessage = typeof body?.message === 'string' ? body.message : '';
-  const userMsg = rawMessage.trim();
+  let userMsg = rawMessage.trim();
+
+  let images: string[] | null = null;
+  if (Array.isArray(body?.images)) {
+    if (body.images.length > 3) {
+      res.status(400).json({ detail: 'Máximo 3 imágenes por solicitud.' });
+      return;
+    }
+    images = body.images.filter((item): item is string => typeof item === 'string');
+  }
+
+  if (!userMsg && images && images.length > 0) {
+    userMsg = 'Analiza detalladamente esta imagen adjunta.';
+  }
+
   if (userMsg.length < 1 || userMsg.length > 4000) {
     res.status(400).json({ detail: 'message debe tener entre 1 y 4000 caracteres.' });
     return;
@@ -146,15 +160,6 @@ apiRouter.post('/chat', async (req, res) => {
       : typeof body?.chat_id === 'string' && body.chat_id.trim()
       ? body.chat_id.trim().slice(0, 64)
       : 'default';
-
-  let images: string[] | null = null;
-  if (Array.isArray(body?.images)) {
-    if (body.images.length > 3) {
-      res.status(400).json({ detail: 'Máximo 3 imágenes por solicitud.' });
-      return;
-    }
-    images = body.images.filter((item): item is string => typeof item === 'string');
-  }
 
   // Cargar únicamente el historial de este chat de este usuario para contexto del modelo
   const chatHistory = await getHistory(sessionId, userId, 6);

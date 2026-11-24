@@ -160,10 +160,16 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ── Textarea Autoexpand & Input Handling ─────────────────────────────────────
+function updateSendButtonState() {
+  const hasText = Boolean(chatTextarea.value.trim());
+  const hasImages = attachedImages.length > 0;
+  sendBtn.disabled = (!hasText && !hasImages) || isStreaming;
+}
+
 chatTextarea.addEventListener('input', () => {
   chatTextarea.style.height = 'auto';
   chatTextarea.style.height = Math.min(chatTextarea.scrollHeight, 160) + 'px';
-  sendBtn.disabled = !chatTextarea.value.trim() || isStreaming;
+  updateSendButtonState();
 });
 
 chatTextarea.addEventListener('keydown', (e) => {
@@ -173,7 +179,35 @@ chatTextarea.addEventListener('keydown', (e) => {
   }
 });
 
-sendBtn.addEventListener('click', handleSend);
+chatTextarea.addEventListener('paste', async (e) => {
+  const clipboardData = e.clipboardData;
+  if (!clipboardData) return;
+  const items = Array.from(clipboardData.items || []);
+  const imageFiles = items
+    .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+    .map((item) => item.getAsFile())
+    .filter(Boolean);
+
+  if (imageFiles.length > 0) {
+    if (attachedImages.length + imageFiles.length > 3) {
+      showDockNotice('Máximo 3 imágenes permitidas por solicitud.');
+      return;
+    }
+    for (const file of imageFiles) {
+      if (file.size > 20 * 1024 * 1024) {
+        showDockNotice('La imagen supera el límite de 20 MB.');
+        continue;
+      }
+      const b64 = await toBase64(file);
+      attachedImages.push(b64);
+    }
+    renderImagePreviews();
+  }
+});
+
+sendBtn.addEventListener('click', () => {
+  if (!sendBtn.disabled) handleSend();
+});
 
 // ── Route Flow Nodes & Mode Sync ─────────────────────────────────────────────
 const flowNodes = document.querySelectorAll('.flow-node');
@@ -232,6 +266,7 @@ function renderImagePreviews() {
   imagePreviews.innerHTML = '';
   if (attachedImages.length === 0) {
     imagePreviews.hidden = true;
+    updateSendButtonState();
     return;
   }
   imagePreviews.hidden = false;
@@ -257,6 +292,7 @@ function renderImagePreviews() {
     thumb.appendChild(removeBtn);
     imagePreviews.appendChild(thumb);
   });
+  updateSendButtonState();
 }
 
 // ── Markdown, Sanitization & Copyable Code Blocks ────────────────────────────
@@ -426,19 +462,20 @@ function scrollToBottom() {
 // ── Streaming SSE Chat Handler ───────────────────────────────────────────────
 async function handleSend() {
   const text = chatTextarea.value.trim();
-  if (!text || isStreaming) return;
+  const sentImages = [...attachedImages];
+  if ((!text && sentImages.length === 0) || isStreaming) return;
 
   isStreaming = true;
   sendBtn.disabled = true;
   welcomeHero.style.display = 'none';
 
   if (activeSessionTitle.textContent === 'Nueva consulta') {
-    const shortTitle = text.length > 48 ? text.slice(0, 48) + '…' : text;
+    const shortTitle = text ? (text.length > 48 ? text.slice(0, 48) + '…' : text) : 'Análisis visual';
     activeSessionTitle.textContent = shortTitle;
   }
 
-  const sentImages = [...attachedImages];
-  renderUserMessage(text, sentImages);
+  const promptText = text || 'Analiza detalladamente esta imagen adjunta.';
+  renderUserMessage(promptText, sentImages);
 
   chatTextarea.value = '';
   chatTextarea.style.height = 'auto';
@@ -456,7 +493,7 @@ async function handleSend() {
         'x-user-id': currentUserId,
       },
       body: JSON.stringify({
-        message: text,
+        message: promptText,
         mode: modeSelector.value,
         session_id: activeSessionId,
         user_id: currentUserId,
@@ -531,7 +568,7 @@ async function handleSend() {
   }
 
   isStreaming = false;
-  sendBtn.disabled = !chatTextarea.value.trim();
+  updateSendButtonState();
   scrollToBottom();
 }
 
@@ -681,13 +718,6 @@ async function loadSessionHistory(sess) {
         enhanceCodeBlocks(contentEl);
       });
     }
-
-    if (window.innerWidth <= 768) setSidebarOpen(false);
-    scrollToBottom();
-  } catch {
-    showDockNotice('No se pudo cargar el historial de la sesión.');
-  }
-}
 
     if (window.innerWidth <= 768) setSidebarOpen(false);
     scrollToBottom();
