@@ -31,39 +31,84 @@ OPENROUTER_CODE_MODEL = os.environ.get("OPENROUTER_CODE_MODEL", "qwen/qwen-2.5-c
 # ── Clientes y Proveedores ───────────────────────────────────────────────────
 
 async def call_gemini(prompt: str, history: List[Dict[str, Any]] = None) -> AsyncGenerator[str, None]:
-    """Canal Principal: Google AI Studio (Gemini Flash)."""
-    if not GEMINI_KEY:
+    """
+    Canal Principal: Google AI Studio (Gemini Flash).
+    Usa la API REST v1beta con SSE para evitar errores 404 de versión del SDK v1.
+    """
+    key = os.environ.get("GEMINI_API_KEY", "")
+    if not key:
         raise RuntimeError("GEMINI_API_KEY no configurada")
 
-    import google.generativeai as genai
-    genai.configure(api_key=GEMINI_KEY)
+    configured_model = os.environ.get("GEMINI_MODEL", "").strip()
+    candidate_models = [m for m in [configured_model, "gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-2.0-flash-exp", "gemini-1.5-pro"] if m]
 
-    model = genai.GenerativeModel(
-        model_name=GEMINI_MODEL,
-        system_instruction=SYSTEM_PROMPT
-    )
-
-    # Construir historial si existe
+    # Construir contents para la API v1beta de Gemini
     contents = []
     if history:
         for h in history:
-            contents.append({"role": "user", "parts": [h["message"]]})
-            contents.append({"role": "model", "parts": [h["response"]]})
-    contents.append({"role": "user", "parts": [prompt]})
+            contents.append({"role": "user", "parts": [{"text": h["message"]}]})
+            contents.append({"role": "model", "parts": [{"text": h["response"]}]})
+    contents.append({"role": "user", "parts": [{"text": prompt}]})
 
-    response = model.generate_content(contents, stream=True)
-    for chunk in response:
-        if chunk.text:
-            yield chunk.text
+    payload = {
+        "contents": contents,
+        "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+        "generationConfig": {"temperature": 0.7}
+    }
+
+    last_error = None
+    streamed_any = False
+
+    async with httpx.AsyncClient(timeout=35.0) as client:
+        for model_name in candidate_models:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:streamGenerateContent?key={key}&alt=sse"
+            try:
+                async with client.stream("POST", url, json=payload) as response:
+                    if response.status_code == 404:
+                        last_error = f"Modelo {model_name} no encontrado (404)"
+                        continue  # Probar el siguiente modelo candidato
+                    if response.status_code >= 400:
+                        err_body = await response.aread()
+                        raise RuntimeError(f"Google Gemini HTTP {response.status_code}: {err_body.decode('utf-8', 'ignore')}")
+
+                    async for line in response.aiter_lines():
+                        if line.startswith("data: "):
+                            data_str = line[6:].strip()
+                            try:
+                                data = json.loads(data_str)
+                                candidates = data.get("candidates", [])
+                                if candidates:
+                                    parts = candidates[0].get("content", {}).get("parts", [])
+                                    for part in parts:
+                                        t = part.get("text", "")
+                                        if t:
+                                            streamed_any = True
+                                            yield t
+                            except Exception:
+                                continue
+
+                    if streamed_any:
+                        return
+            except Exception as e:
+                last_error = str(e)
+                if "404" in last_error or "not found" in last_error.lower():
+                    continue
+                raise
+
+    raise RuntimeError(f"Google AI Studio error: {last_error or 'No se pudo conectar a ningún modelo candidato'}")
 
 
 async def call_groq(prompt: str, history: List[Dict[str, Any]] = None, images: List[str] = None) -> AsyncGenerator[str, None]:
-    """Canal Auxiliar: Groq (Baja latencia y Visión)."""
-    if not GROQ_KEY:
+    """
+    Canal Auxiliar: Groq (Baja latencia y Visión).
+    Prueba adaptativa de modelos activos (llama-3.1-8b-instant como base universal).
+    """
+    key = os.environ.get("GROQ_API_KEY", "")
+    if not key:
         raise RuntimeError("GROQ_API_KEY no configurada")
 
     from groq import Groq
-    client = Groq(api_key=GROQ_KEY)
+    client = Groq(api_key=key)
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     if history:
@@ -71,40 +116,62 @@ async def call_groq(prompt: str, history: List[Dict[str, Any]] = None, images: L
             messages.append({"role": "user", "content": h["message"]})
             messages.append({"role": "assistant", "content": h["response"]})
 
-    # Soporte visión si hay imágenes
-    if images:
+    is_vision = bool(images and len(images) > 0)
+
+    if is_vision:
         content_parts = [{"type": "text", "text": prompt}]
-        for img in images[:3]:  # Máximo 3 imágenes
+        for img in images[:3]:
             content_parts.append({
                 "type": "image_url",
                 "image_url": {"url": img}
             })
         messages.append({"role": "user", "content": content_parts})
-        model_name = GROQ_VISION_MODEL
+        configured_vision = os.environ.get("GROQ_VISION_MODEL", "").strip()
+        candidate_models = [m for m in [configured_vision, "llama-3.2-11b-vision-preview", "llama-3.2-90b-vision-preview"] if m]
     else:
         messages.append({"role": "user", "content": prompt})
-        model_name = GROQ_MODEL
+        configured_text = os.environ.get("GROQ_MODEL", "").strip()
+        candidate_models = [m for m in [configured_text, "llama-3.1-8b-instant", "llama-3.3-70b-versatile", "mixtral-8x7b-32768"] if m]
 
-    completion = client.chat.completions.create(
-        model=model_name,
-        messages=messages,
-        temperature=0.7,
-        max_tokens=2000,
-        stream=True
-    )
+    last_error = None
+    streamed_any = False
 
-    for chunk in completion:
-        text = chunk.choices[0].delta.content or ""
-        if text:
-            yield text
+    for model_name in candidate_models:
+        try:
+            completion = client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                temperature=0.7,
+                max_tokens=2000,
+                stream=True
+            )
+
+            for chunk in completion:
+                text = chunk.choices[0].delta.content or ""
+                if text:
+                    streamed_any = True
+                    yield text
+
+            if streamed_any:
+                return
+
+        except Exception as e:
+            err_str = str(e)
+            last_error = err_str
+            if "404" in err_str or "does not exist" in err_str or "model_not_found" in err_str:
+                continue  # Intentar siguiente modelo candidato
+            raise
+
+    raise RuntimeError(f"Groq error: {last_error or 'No se pudo inicializar ningún modelo de Groq'}")
 
 
 async def call_openrouter(prompt: str, model_name: str = None, history: List[Dict[str, Any]] = None) -> AsyncGenerator[str, None]:
     """Canal de Código / Última Línea de Defensa: OpenRouter."""
-    if not OPENROUTER_KEY:
+    key = os.environ.get("OPENROUTER_API_KEY", "")
+    if not key:
         raise RuntimeError("OPENROUTER_API_KEY no configurada")
 
-    chosen_model = model_name or OPENROUTER_FREE_MODEL
+    chosen_model = model_name or os.environ.get("OPENROUTER_FREE_MODEL", "openrouter/free")
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     if history:
@@ -114,7 +181,7 @@ async def call_openrouter(prompt: str, model_name: str = None, history: List[Dic
     messages.append({"role": "user", "content": prompt})
 
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_KEY}",
+        "Authorization": f"Bearer {key}",
         "HTTP-Referer": "https://nova-ai.vercel.app",
         "X-Title": "Nova AI",
         "Content-Type": "application/json"
