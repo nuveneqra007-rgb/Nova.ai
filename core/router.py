@@ -184,13 +184,34 @@ async def call_groq(prompt: str, history: List[Dict[str, Any]] = None, images: L
     raise RuntimeError(f"Groq error: {last_error or 'No se pudo inicializar ningún modelo de Groq'}")
 
 
-async def call_openrouter(prompt: str, model_name: str = None, history: List[Dict[str, Any]] = None) -> AsyncGenerator[str, None]:
-    """Canal de Código / Última Línea de Defensa: OpenRouter."""
+async def call_openrouter(prompt: str, model_name: str = None, history: List[Dict[str, Any]] = None, is_code: bool = False) -> AsyncGenerator[str, None]:
+    """
+    Canal de Código / Última Línea de Defensa: OpenRouter.
+    Soporta texto general y código con lista adaptativa de modelos gratuitos (anti-fragilidad).
+    """
     key = os.environ.get("OPENROUTER_API_KEY", "")
     if not key:
         raise RuntimeError("OPENROUTER_API_KEY no configurada")
 
-    chosen_model = model_name or os.environ.get("OPENROUTER_FREE_MODEL", "openrouter/free")
+    if is_code:
+        configured_code = os.environ.get("OPENROUTER_CODE_MODEL", "").strip()
+        candidate_models = [m for m in [
+            model_name or configured_code,
+            "qwen/qwen-2.5-coder-32b-instruct:free",
+            "openrouter/auto-code",
+            "openrouter/free",
+            "openrouter/auto"
+        ] if m]
+    else:
+        configured_free = os.environ.get("OPENROUTER_FREE_MODEL", "").strip()
+        candidate_models = [m for m in [
+            model_name or configured_free,
+            "openrouter/free",
+            "openrouter/auto",
+            "meta-llama/llama-3.2-3b-instruct:free",
+            "google/gemini-2.0-flash-exp:free",
+            "mistralai/mistral-7b-instruct:free"
+        ] if m]
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     if history:
@@ -206,30 +227,45 @@ async def call_openrouter(prompt: str, model_name: str = None, history: List[Dic
         "Content-Type": "application/json"
     }
 
-    payload = {
-        "model": chosen_model,
-        "messages": messages,
-        "stream": True,
-        "temperature": 0.6
-    }
+    last_error = None
+    streamed_any = False
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        async with client.stream("POST", "https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload) as response:
-            if response.status_code >= 400:
-                raise RuntimeError(f"OpenRouter error HTTP {response.status_code}: {await response.aread()}")
+    async with httpx.AsyncClient(timeout=35.0) as client:
+        for chosen_model in candidate_models:
+            payload = {
+                "model": chosen_model,
+                "messages": messages,
+                "stream": True,
+                "temperature": 0.6 if is_code else 0.7
+            }
+            try:
+                async with client.stream("POST", "https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload) as response:
+                    if response.status_code >= 400:
+                        err_body = await response.aread()
+                        last_error = f"HTTP {response.status_code}: {err_body.decode('utf-8', 'ignore')[:100]}"
+                        continue  # Intentar siguiente modelo candidato gratuito
 
-            async for line in response.aiter_lines():
-                if line.startswith("data: "):
-                    data_str = line[6:].strip()
-                    if data_str == "[DONE]":
-                        break
-                    try:
-                        data = json.loads(data_str)
-                        token = data["choices"][0]["delta"].get("content", "")
-                        if token:
-                            yield token
-                    except Exception:
-                        continue
+                    async for line in response.aiter_lines():
+                        if line.startswith("data: "):
+                            data_str = line[6:].strip()
+                            if data_str == "[DONE]":
+                                break
+                            try:
+                                data = json.loads(data_str)
+                                token = data["choices"][0]["delta"].get("content", "")
+                                if token:
+                                    streamed_any = True
+                                    yield token
+                            except Exception:
+                                continue
+
+                    if streamed_any:
+                        return
+            except Exception as e:
+                last_error = str(e)
+                continue
+
+    raise RuntimeError(f"OpenRouter error: {last_error or 'No se pudo conectar a ningún modelo candidato en OpenRouter'}")
 
 
 # ── Motor de Enrutamiento Inteligente con Conmutación Automática ────────────
@@ -254,11 +290,11 @@ async def route_and_stream(
     if images and len(images) > 0:
         chain = [
             ("Groq Vision", lambda: call_groq(prompt, history, images=images)),
-            ("OpenRouter Vision", lambda: call_openrouter(prompt, model_name=OPENROUTER_FREE_MODEL, history=history)),
+            ("OpenRouter Vision", lambda: call_openrouter(prompt, model_name="openrouter/free", history=history)),
         ]
     elif mode == "code":
         chain = [
-            ("OpenRouter Code", lambda: call_openrouter(prompt, model_name=OPENROUTER_CODE_MODEL, history=history)),
+            ("OpenRouter Code", lambda: call_openrouter(prompt, is_code=True, history=history)),
             ("Google AI Studio", lambda: call_gemini(prompt, history=history)),
             ("Groq", lambda: call_groq(prompt, history=history)),
         ]
@@ -266,14 +302,14 @@ async def route_and_stream(
         chain = [
             ("Groq", lambda: call_groq(prompt, history=history)),
             ("Google AI Studio", lambda: call_gemini(prompt, history=history)),
-            ("OpenRouter", lambda: call_openrouter(prompt, model_name=OPENROUTER_FREE_MODEL, history=history)),
+            ("OpenRouter", lambda: call_openrouter(prompt, is_code=False, history=history)),
         ]
     else:
         # Modo Auto / General: Google -> Groq -> OpenRouter
         chain = [
             ("Google AI Studio", lambda: call_gemini(prompt, history=history)),
             ("Groq", lambda: call_groq(prompt, history=history)),
-            ("OpenRouter", lambda: call_openrouter(prompt, model_name=OPENROUTER_FREE_MODEL, history=history)),
+            ("OpenRouter", lambda: call_openrouter(prompt, is_code=False, history=history)),
         ]
 
     active_provider = None
