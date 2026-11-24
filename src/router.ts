@@ -1,4 +1,3 @@
-import { GoogleGenAI } from '@google/genai';
 import Groq from 'groq-sdk';
 import type { HistoryEntry } from './memory.ts';
 import { telemetry } from './telemetry.ts';
@@ -34,7 +33,21 @@ function parseDataUrl(dataUrl: string): { mimeType: string; data: string } | nul
   return { mimeType: match[1], data: match[2] };
 }
 
-// ── Google AI Studio ──────────────────────────────────────────────────────────
+function extractErrorMessage(raw: unknown): string {
+  if (!raw) return 'Error desconocido';
+  const str = raw instanceof Error ? raw.message : String(raw);
+  try {
+    const parsed = JSON.parse(str);
+    const msg = parsed?.error?.message || parsed?.[0]?.error?.message || parsed?.message;
+    if (typeof msg === 'string') return msg.trim();
+  } catch {
+    // No es JSON simple, procesar string
+  }
+  const clean = str.replace(/[\r\n\t]+/g, ' ').trim();
+  return clean.length > 70 ? `${clean.slice(0, 67)}…` : clean;
+}
+
+// ── Google AI Studio (Direct REST v1beta SSE con Multi-Model Fallback) ────────
 
 async function* callGemini(
   prompt: string,
@@ -46,17 +59,8 @@ async function* callGemini(
     throw new Error('GEMINI_API_KEY no configurada');
   }
 
-  const ai = new GoogleGenAI({
-    apiKey,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      },
-    },
-  });
-
   const configuredModel = (process.env.GEMINI_MODEL || '').trim();
-  // Modelos ordenados según especificación: gemini-3-flash-preview > gemini-2.5-flash / lite / pro
+  // Cadena completa de modelos de Google AI Studio en orden de prioridad:
   const candidateModels = Array.from(
     new Set(
       [
@@ -66,6 +70,10 @@ async function* callGemini(
         'gemini-2.5-flash-lite',
         'gemini-2.5-pro',
         'gemini-2.0-flash',
+        'gemini-2.0-flash-lite-preview-02-05',
+        'gemini-1.5-flash',
+        'gemini-1.5-flash-8b',
+        'gemini-1.5-pro',
       ].filter(Boolean)
     )
   );
@@ -97,19 +105,80 @@ async function* callGemini(
 
   for (const modelName of candidateModels) {
     try {
-      const responseStream = await ai.models.generateContentStream({
-        model: modelName,
-        contents,
-        config: {
-          systemInstruction: SYSTEM_PROMPT,
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 35000);
+
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelName)}:streamGenerateContent?key=${encodeURIComponent(apiKey)}&alt=sse`;
+
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
         },
+        body: JSON.stringify({
+          contents,
+          systemInstruction: {
+            parts: [{ text: SYSTEM_PROMPT }],
+          },
+          generationConfig: {
+            temperature: 0.7,
+          },
+        }),
+        signal: controller.signal,
       });
 
-      for await (const chunk of responseStream) {
-        const text = chunk.text || '';
-        if (text) {
-          streamedAny = true;
-          yield text;
+      clearTimeout(timer);
+
+      if (!response.ok || !response.body) {
+        const errBody = await response.text().catch(() => '');
+        let cleanReason = `HTTP ${response.status}`;
+        try {
+          const errObj = JSON.parse(errBody);
+          const detail = errObj?.[0]?.error?.message || errObj?.error?.message;
+          if (detail) cleanReason = `${cleanReason}: ${detail}`;
+        } catch {
+          if (errBody) cleanReason = `${cleanReason}: ${errBody.slice(0, 60)}`;
+        }
+        lastError = `${modelName} [${cleanReason}]`;
+        continue;
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const rawLine of lines) {
+          const line = rawLine.trim();
+          if (!line.startsWith('data: ')) continue;
+          const dataStr = line.slice(6).trim();
+          if (dataStr === '[DONE]') break;
+          try {
+            const data = JSON.parse(dataStr) as {
+              candidates?: Array<{
+                content?: {
+                  parts?: Array<{ text?: string }>;
+                };
+              }>;
+            };
+            const parts = data?.candidates?.[0]?.content?.parts || [];
+            for (const part of parts) {
+              const text = part?.text || '';
+              if (text) {
+                streamedAny = true;
+                yield text;
+              }
+            }
+          } catch {
+            continue;
+          }
         }
       }
 
@@ -117,17 +186,16 @@ async function* callGemini(
         return;
       }
     } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      lastError = `${modelName}: ${errMsg}`;
-      // Fallback adaptativo: Si falla por 404, 429, cuota o error temporal, probar el siguiente modelo
+      const parsedErr = extractErrorMessage(err);
+      lastError = `${modelName}: ${parsedErr}`;
       continue;
     }
   }
 
-  throw new Error(`Google AI Studio error: ${lastError || 'No se pudo conectar a ningún modelo candidato'}`);
+  throw new Error(lastError || 'No se pudo conectar a ningún modelo candidato en Google AI Studio');
 }
 
-// ── Groq ──────────────────────────────────────────────────────────────────────
+// ── Groq (Ultra-Fast Inference & Vision) ──────────────────────────────────────
 
 async function* callGroq(
   prompt: string,
@@ -220,16 +288,16 @@ async function* callGroq(
         return;
       }
     } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
+      const errMsg = extractErrorMessage(err);
       lastError = `${modelName}: ${errMsg}`;
       continue;
     }
   }
 
-  throw new Error(`Groq error: ${lastError || 'No se pudo inicializar ningún modelo de Groq'}`);
+  throw new Error(lastError || 'No se pudo inicializar ningún modelo de Groq');
 }
 
-// ── OpenRouter ────────────────────────────────────────────────────────────────
+// ── OpenRouter (Dynamic Free Discovery & Fallback) ────────────────────────────
 
 let cachedOpenRouterFreeModels: string[] = [];
 let lastOpenRouterCacheTime = 0;
@@ -260,7 +328,7 @@ async function getLiveOpenRouterFreeModels(): Promise<string[]> {
       }
     }
   } catch {
-    // Si la llamada falla, conservar caché o lista estática
+    // Si la llamada falla, conservar caché
   }
   return cachedOpenRouterFreeModels;
 }
@@ -293,7 +361,6 @@ async function* callOpenRouter(
           'nvidia/nemotron-3.5-lightning:free',
           'google/gemma-4-26b-a4b-it:free',
           'nvidia/nemotron-3-ultra-550b-a55b:free',
-          'qwen/qwen-2.5-coder-32b-instruct:free',
           ...dynamicCode,
           ...liveFree,
         ].filter(Boolean)
@@ -357,7 +424,15 @@ async function* callOpenRouter(
 
       if (!response.ok || !response.body) {
         const errBody = await response.text().catch(() => '');
-        lastError = `${chosenModel} [HTTP ${response.status}: ${errBody.slice(0, 100)}]`;
+        let cleanReason = `HTTP ${response.status}`;
+        try {
+          const errObj = JSON.parse(errBody);
+          const detail = errObj?.error?.message || errObj?.message;
+          if (detail) cleanReason = `${cleanReason}: ${detail}`;
+        } catch {
+          if (errBody) cleanReason = `${cleanReason}: ${errBody.slice(0, 60)}`;
+        }
+        lastError = `${chosenModel} [${cleanReason}]`;
         continue;
       }
 
@@ -404,14 +479,13 @@ async function* callOpenRouter(
         return;
       }
     } catch (err) {
-      lastError = `${chosenModel}: ${err instanceof Error ? err.message : String(err)}`;
+      const errMsg = extractErrorMessage(err);
+      lastError = `${chosenModel}: ${errMsg}`;
       continue;
     }
   }
 
-  throw new Error(
-    `OpenRouter error: ${lastError || 'No se pudo conectar a ningún modelo candidato en OpenRouter'}`
-  );
+  throw new Error(lastError || 'No se pudo conectar a ningún modelo candidato en OpenRouter');
 }
 
 // ── Routing Engine ────────────────────────────────────────────────────────────
@@ -484,7 +558,7 @@ export async function* routeAndStream(params: {
       }
       throw new Error(`${providerName} no devolvió contenido`);
     } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
+      const errMsg = extractErrorMessage(err);
       const failoverLatency = Date.now() - provStart;
       failoverLog.push({
         from_provider: providerName,

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import cors from 'cors';
-import { initDb, saveMessage, getHistory, getSessions } from './src/memory.ts';
+import { initDb, saveMessage, getHistory, getSessions, deleteSession } from './src/memory.ts';
 import { routeAndStream } from './src/router.ts';
 import { telemetry } from './src/telemetry.ts';
 
@@ -40,7 +40,8 @@ app.use(
       return callback(null, true);
     },
     credentials: true,
-    methods: ['GET', 'POST', 'OPTIONS'],
+    methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-user-id', 'X-Requested-With'],
   })
 );
 
@@ -48,6 +49,18 @@ app.use(express.json({ limit: '64mb' }));
 
 // ── API Router ────────────────────────────────────────────────────────────────
 const apiRouter = express.Router();
+
+function getUserId(req: express.Request): string {
+  const headerVal = req.headers['x-user-id'];
+  if (typeof headerVal === 'string' && headerVal.trim()) {
+    return headerVal.trim().slice(0, 48);
+  }
+  const queryVal = req.query.user_id;
+  if (typeof queryVal === 'string' && queryVal.trim()) {
+    return queryVal.trim().slice(0, 48);
+  }
+  return 'anonymous';
+}
 
 apiRouter.get('/health', (_req, res) => {
   res.json({
@@ -66,19 +79,38 @@ apiRouter.get('/telemetry', (_req, res) => {
 });
 
 apiRouter.get('/sessions', async (req, res) => {
+  const userId = getUserId(req);
   const query = typeof req.query.q === 'string' ? req.query.q : '';
-  const sessions = await getSessions(query);
-  res.json({ sessions });
+  const sessions = await getSessions(userId, query);
+  res.json({ sessions, user_id: userId });
 });
 
 apiRouter.get('/history', async (req, res) => {
-  const sessionId = typeof req.query.session_id === 'string' ? req.query.session_id.trim() : '';
+  const userId = getUserId(req);
+  const sessionId =
+    typeof req.query.session_id === 'string'
+      ? req.query.session_id.trim()
+      : typeof req.query.chat_id === 'string'
+      ? req.query.chat_id.trim()
+      : '';
+
   if (!sessionId) {
     res.status(400).json({ detail: 'session_id es requerido' });
     return;
   }
-  const history = await getHistory(sessionId);
-  res.json({ history });
+  const history = await getHistory(sessionId, userId);
+  res.json({ history, session_id: sessionId, user_id: userId });
+});
+
+apiRouter.delete('/sessions/:id', async (req, res) => {
+  const userId = getUserId(req);
+  const sessionId = req.params.id;
+  if (!sessionId) {
+    res.status(400).json({ detail: 'id es requerido' });
+    return;
+  }
+  await deleteSession(userId, sessionId);
+  res.json({ success: true, session_id: sessionId });
 });
 
 apiRouter.post('/chat', async (req, res) => {
@@ -86,6 +118,8 @@ apiRouter.post('/chat', async (req, res) => {
     message?: unknown;
     mode?: unknown;
     session_id?: unknown;
+    chat_id?: unknown;
+    user_id?: unknown;
     images?: unknown;
   };
 
@@ -99,10 +133,19 @@ apiRouter.post('/chat', async (req, res) => {
   const allowedModes = new Set(['auto', 'reasoning', 'speed', 'code']);
   const mode = typeof body?.mode === 'string' && allowedModes.has(body.mode) ? body.mode : 'auto';
 
+  // Identificador del usuario individual
+  const userId =
+    typeof body?.user_id === 'string' && body.user_id.trim()
+      ? body.user_id.trim().slice(0, 48)
+      : getUserId(req);
+
+  // Identificador de la sesión/chat individual
   const sessionId =
     typeof body?.session_id === 'string' && body.session_id.trim()
       ? body.session_id.trim().slice(0, 64)
-      : 'anonymous';
+      : typeof body?.chat_id === 'string' && body.chat_id.trim()
+      ? body.chat_id.trim().slice(0, 64)
+      : 'default';
 
   let images: string[] | null = null;
   if (Array.isArray(body?.images)) {
@@ -113,7 +156,8 @@ apiRouter.post('/chat', async (req, res) => {
     images = body.images.filter((item): item is string => typeof item === 'string');
   }
 
-  const chatHistory = await getHistory(sessionId, 6);
+  // Cargar únicamente el historial de este chat de este usuario para contexto del modelo
+  const chatHistory = await getHistory(sessionId, userId, 6);
 
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -141,6 +185,7 @@ apiRouter.post('/chat', async (req, res) => {
 
     if (finalText) {
       await saveMessage({
+        userId,
         sessionId,
         message: userMsg,
         response: finalText,

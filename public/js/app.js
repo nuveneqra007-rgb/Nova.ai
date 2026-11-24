@@ -56,28 +56,41 @@ let sessionsCache = [];
 let activeSessionId = getOrCreateSessionId();
 let noticeTimer = null;
 
-// ── Session Management ───────────────────────────────────────────────────────
+// ── User & Session Management (Aislamiento individual por usuario) ───────────
+function getOrCreateUserId() {
+  let uid = localStorage.getItem('nova_user_id');
+  if (!uid || !uid.startsWith('usr_')) {
+    const rand = typeof crypto !== 'undefined' && crypto.getRandomValues
+      ? Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join('')
+      : Math.random().toString(36).slice(2, 14);
+    uid = `usr_${rand}`;
+    localStorage.setItem('nova_user_id', uid);
+  }
+  return uid;
+}
+
+const currentUserId = getOrCreateUserId();
+
 function generateSessionId() {
-  return (
-    'sess_' +
-    Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) =>
-      b.toString(16).padStart(2, '0')
-    ).join('')
-  );
+  const rand = typeof crypto !== 'undefined' && crypto.getRandomValues
+    ? Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join('')
+    : Math.random().toString(36).slice(2, 10);
+  return `chat_${rand}`;
 }
 
 function getOrCreateSessionId() {
-  let sid = localStorage.getItem('nova_session_id');
+  let sid = localStorage.getItem('nova_active_chat_id') || localStorage.getItem('nova_session_id');
   if (!sid) {
     sid = generateSessionId();
-    localStorage.setItem('nova_session_id', sid);
+    localStorage.setItem('nova_active_chat_id', sid);
   }
   return sid;
 }
 
 function setActiveSession(sid, titleText = 'Nueva consulta') {
   activeSessionId = sid;
-  localStorage.setItem('nova_session_id', sid);
+  localStorage.setItem('nova_active_chat_id', sid);
+  localStorage.setItem('nova_session_title', titleText);
   activeSessionTitle.textContent = titleText;
   renderSessionList();
 }
@@ -438,11 +451,15 @@ async function handleSend() {
   try {
     const response = await fetch('/api/chat', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-user-id': currentUserId,
+      },
       body: JSON.stringify({
         message: text,
         mode: modeSelector.value,
         session_id: activeSessionId,
+        user_id: currentUserId,
         images: sentImages.length > 0 ? sentImages : null,
       }),
     });
@@ -527,8 +544,8 @@ document.querySelectorAll('.action-card').forEach((card) => {
   });
 });
 
-// ── Session History (Backend-Connected + Live Search) ────────────────────────
-newChatBtn.addEventListener('click', () => {
+// ── Session History (Individual por usuario + Búsqueda en vivo) ──────────────
+function startNewChat() {
   const newSid = generateSessionId();
   setActiveSession(newSid, 'Nueva consulta');
   messagesWrapper.innerHTML = '';
@@ -536,7 +553,9 @@ newChatBtn.addEventListener('click', () => {
   welcomeHero.style.display = 'flex';
   if (window.innerWidth <= 768) setSidebarOpen(false);
   chatTextarea.focus();
-});
+}
+
+newChatBtn.addEventListener('click', startNewChat);
 
 let searchDebounce = null;
 sessionSearchInput.addEventListener('input', () => {
@@ -549,7 +568,11 @@ sessionSearchInput.addEventListener('input', () => {
 async function fetchSessions(query = '') {
   try {
     const qs = query.trim() ? `?q=${encodeURIComponent(query.trim())}` : '';
-    const res = await fetch(`/api/sessions${qs}`);
+    const res = await fetch(`/api/sessions${qs}`, {
+      headers: {
+        'x-user-id': currentUserId,
+      },
+    });
     if (!res.ok) return;
     const data = await res.json();
     sessionsCache = Array.isArray(data.sessions) ? data.sessions : [];
@@ -573,10 +596,12 @@ function renderSessionList() {
   }
 
   sessionsCache.forEach((sess) => {
-    const item = document.createElement('button');
-    item.type = 'button';
+    const item = document.createElement('div');
     item.className = `history-item${sess.session_id === activeSessionId ? ' active' : ''}`;
     item.setAttribute('role', 'listitem');
+
+    const content = document.createElement('div');
+    content.className = 'history-item-content';
 
     const title = document.createElement('span');
     title.className = 'history-item-title';
@@ -587,22 +612,57 @@ function renderSessionList() {
     const msgLabel = sess.message_count === 1 ? '1 turno' : `${sess.message_count} turnos`;
     meta.textContent = `${sess.last_provider} · ${msgLabel}`;
 
-    item.appendChild(title);
-    item.appendChild(meta);
+    content.appendChild(title);
+    content.appendChild(meta);
+    item.appendChild(content);
+
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'history-item-del-btn';
+    delBtn.title = 'Eliminar conversación';
+    delBtn.setAttribute('aria-label', `Eliminar conversación ${sess.title}`);
+    delBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+    delBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await deleteChatSession(sess.session_id);
+    });
+
+    item.appendChild(delBtn);
     item.addEventListener('click', () => loadSessionHistory(sess));
     historyList.appendChild(item);
   });
 }
 
+async function deleteChatSession(sid) {
+  try {
+    await fetch(`/api/sessions/${encodeURIComponent(sid)}`, {
+      method: 'DELETE',
+      headers: {
+        'x-user-id': currentUserId,
+      },
+    });
+    if (activeSessionId === sid) {
+      startNewChat();
+    }
+    await fetchSessions(sessionSearchInput.value);
+  } catch {
+    showDockNotice('No se pudo eliminar la conversación.');
+  }
+}
+
 async function loadSessionHistory(sess) {
   if (isStreaming) return;
   try {
-    const res = await fetch(`/api/history?session_id=${encodeURIComponent(sess.session_id)}`);
+    const res = await fetch(`/api/history?session_id=${encodeURIComponent(sess.session_id)}`, {
+      headers: {
+        'x-user-id': currentUserId,
+      },
+    });
     if (!res.ok) return;
     const data = await res.json();
     const entries = Array.isArray(data.history) ? data.history : [];
 
-    setActiveSession(sess.session_id, sess.title);
+    setActiveSession(sess.session_id, sess.title || 'Conversación');
     messagesWrapper.innerHTML = '';
     messagesWrapper.appendChild(welcomeHero);
 
@@ -621,6 +681,13 @@ async function loadSessionHistory(sess) {
         enhanceCodeBlocks(contentEl);
       });
     }
+
+    if (window.innerWidth <= 768) setSidebarOpen(false);
+    scrollToBottom();
+  } catch {
+    showDockNotice('No se pudo cargar el historial de la sesión.');
+  }
+}
 
     if (window.innerWidth <= 768) setSidebarOpen(false);
     scrollToBottom();
@@ -716,6 +783,11 @@ async function fetchTelemetry() {
 // ── Boot Initialization ──────────────────────────────────────────────────────
 syncFlowNodesSelection();
 fetchHealth();
-fetchSessions();
+fetchSessions().then(() => {
+  if (activeSessionId) {
+    const savedTitle = localStorage.getItem('nova_session_title') || 'Consulta anterior';
+    loadSessionHistory({ session_id: activeSessionId, title: savedTitle });
+  }
+});
 fetchTelemetry();
 setInterval(fetchTelemetry, 8000);

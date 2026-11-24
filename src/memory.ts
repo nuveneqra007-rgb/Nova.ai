@@ -9,7 +9,7 @@ export interface HistoryEntry {
 }
 
 export interface SessionSummary {
-  session_id: string;
+  session_id: string; // ID individual del chat para el usuario
   title: string;
   updated_at: string;
   message_count: number;
@@ -17,6 +17,24 @@ export interface SessionSummary {
 }
 
 const localHistory = new Map<string, HistoryEntry[]>();
+
+export function toCompositeSessionId(userId: string, sessionId: string): string {
+  const cleanUser = (userId || 'anonymous').trim().replace(/[:]/g, '_').slice(0, 48);
+  let cleanSession = (sessionId || 'default').trim().slice(0, 64);
+  if (cleanSession.includes('::')) {
+    const parts = cleanSession.split('::');
+    cleanSession = parts[parts.length - 1];
+  }
+  return `${cleanUser}::${cleanSession}`;
+}
+
+export function extractSessionId(compositeId: string): string {
+  if (compositeId.includes('::')) {
+    const parts = compositeId.split('::');
+    return parts[parts.length - 1];
+  }
+  return compositeId;
+}
 
 function getSupabaseConfig(): { url: string; key: string } | null {
   const url = (process.env.SUPABASE_URL || '').trim().replace(/\/+$/, '');
@@ -43,6 +61,7 @@ function buildTitle(message: string): string {
 }
 
 export async function saveMessage(params: {
+  userId?: string;
   sessionId: string;
   message: string;
   response: string;
@@ -50,10 +69,12 @@ export async function saveMessage(params: {
   model?: string;
   latencyMs?: number;
 }): Promise<void> {
-  const sid = params.sessionId ? String(params.sessionId) : 'anonymous';
+  const uid = params.userId || 'anonymous';
+  const compositeKey = toCompositeSessionId(uid, params.sessionId);
   const nowIso = new Date().toISOString();
+
   const data: HistoryEntry = {
-    session_id: sid,
+    session_id: compositeKey,
     message: params.message,
     response: params.response,
     provider: params.provider || 'Unknown',
@@ -62,13 +83,13 @@ export async function saveMessage(params: {
     created_at: nowIso,
   };
 
-  // 1. Guardar en memoria local
-  const entries = localHistory.get(sid) || [];
+  // 1. Guardar en memoria local aislada por usuario
+  const entries = localHistory.get(compositeKey) || [];
   entries.push(data);
   if (entries.length > 30) {
     entries.shift();
   }
-  localHistory.set(sid, entries);
+  localHistory.set(compositeKey, entries);
 
   // 2. Persistir en Supabase vía REST si está configurado
   const cfg = getSupabaseConfig();
@@ -101,15 +122,19 @@ export async function saveMessage(params: {
   }
 }
 
-export async function getHistory(sessionId: string, limit = 20): Promise<HistoryEntry[]> {
-  const sid = sessionId ? String(sessionId) : 'anonymous';
+export async function getHistory(
+  sessionId: string,
+  userId = 'anonymous',
+  limit = 20
+): Promise<HistoryEntry[]> {
+  const compositeKey = toCompositeSessionId(userId, sessionId);
   const cfg = getSupabaseConfig();
 
   if (cfg) {
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 5000);
-      const queryUrl = `${cfg.url}/rest/v1/messages?select=message,response,provider,model,latency_ms&session_id=eq.${encodeURIComponent(sid)}&order=id.desc&limit=${limit}`;
+      const queryUrl = `${cfg.url}/rest/v1/messages?select=message,response,provider,model,latency_ms&session_id=eq.${encodeURIComponent(compositeKey)}&order=id.desc&limit=${limit}`;
       const res = await fetch(queryUrl, {
         method: 'GET',
         headers: {
@@ -131,20 +156,27 @@ export async function getHistory(sessionId: string, limit = 20): Promise<History
     }
   }
 
-  const local = localHistory.get(sid) || [];
+  const local = localHistory.get(compositeKey) || [];
   return local.slice(-limit);
 }
 
-export async function getSessions(query = '', limit = 30): Promise<SessionSummary[]> {
+export async function getSessions(
+  userId = 'anonymous',
+  query = '',
+  limit = 40
+): Promise<SessionSummary[]> {
+  const cleanUser = (userId || 'anonymous').trim().replace(/[:]/g, '_');
+  const userPrefix = `${cleanUser}::`;
   const sessionsMap = new Map<string, SessionSummary>();
 
-  // 1. Cargar sesiones locales en memoria
-  for (const [sid, entries] of localHistory.entries()) {
-    if (entries.length === 0) continue;
+  // 1. Cargar sesiones locales filtradas ESTRICTAMENTE por este usuario
+  for (const [key, entries] of localHistory.entries()) {
+    if (!key.startsWith(userPrefix) || entries.length === 0) continue;
+    const rawChatId = extractSessionId(key);
     const first = entries[0];
     const last = entries[entries.length - 1];
-    sessionsMap.set(sid, {
-      session_id: sid,
+    sessionsMap.set(rawChatId, {
+      session_id: rawChatId,
       title: buildTitle(first.message),
       updated_at: last.created_at || new Date().toISOString(),
       message_count: entries.length,
@@ -152,13 +184,13 @@ export async function getSessions(query = '', limit = 30): Promise<SessionSummar
     });
   }
 
-  // 2. Complementar con Supabase si está configurado
+  // 2. Complementar con Supabase buscando ÚNICAMENTE los registros de este usuario
   const cfg = getSupabaseConfig();
   if (cfg) {
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 5000);
-      const queryUrl = `${cfg.url}/rest/v1/messages?select=session_id,message,provider,created_at&order=id.desc&limit=150`;
+      const queryUrl = `${cfg.url}/rest/v1/messages?select=session_id,message,provider,created_at&session_id=like.${encodeURIComponent(userPrefix)}*&order=id.desc&limit=200`;
       const res = await fetch(queryUrl, {
         method: 'GET',
         headers: {
@@ -178,17 +210,19 @@ export async function getSessions(query = '', limit = 30): Promise<SessionSummar
         if (Array.isArray(rows)) {
           const grouped = new Map<string, typeof rows>();
           for (const row of rows) {
-            const sid = row.session_id || 'anonymous';
-            const list = grouped.get(sid) || [];
+            const sid = row.session_id || '';
+            if (!sid.startsWith(userPrefix)) continue;
+            const chatId = extractSessionId(sid);
+            const list = grouped.get(chatId) || [];
             list.push(row);
-            grouped.set(sid, list);
+            grouped.set(chatId, list);
           }
-          for (const [sid, list] of grouped.entries()) {
+          for (const [chatId, list] of grouped.entries()) {
             const newest = list[0];
             const oldest = list[list.length - 1];
-            if (!sessionsMap.has(sid)) {
-              sessionsMap.set(sid, {
-                session_id: sid,
+            if (!sessionsMap.has(chatId)) {
+              sessionsMap.set(chatId, {
+                session_id: chatId,
                 title: buildTitle(oldest.message || ''),
                 updated_at: newest.created_at || new Date().toISOString(),
                 message_count: list.length,
@@ -199,7 +233,7 @@ export async function getSessions(query = '', limit = 30): Promise<SessionSummar
         }
       }
     } catch (err) {
-      console.warn('[Supabase REST] Error al listar sesiones:', err instanceof Error ? err.message : err);
+      console.warn('[Supabase REST] Error al listar sesiones del usuario:', err instanceof Error ? err.message : err);
     }
   }
 
@@ -217,4 +251,31 @@ export async function getSessions(query = '', limit = 30): Promise<SessionSummar
   }
 
   return result.slice(0, limit);
+}
+
+export async function deleteSession(userId: string, sessionId: string): Promise<boolean> {
+  const compositeKey = toCompositeSessionId(userId, sessionId);
+  localHistory.delete(compositeKey);
+
+  const cfg = getSupabaseConfig();
+  if (cfg) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 5000);
+      const deleteUrl = `${cfg.url}/rest/v1/messages?session_id=eq.${encodeURIComponent(compositeKey)}`;
+      await fetch(deleteUrl, {
+        method: 'DELETE',
+        headers: {
+          apikey: cfg.key,
+          Authorization: `Bearer ${cfg.key}`,
+        },
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+    } catch (err) {
+      console.warn('[Supabase REST] Error al eliminar sesión:', err instanceof Error ? err.message : err);
+    }
+  }
+
+  return true;
 }
