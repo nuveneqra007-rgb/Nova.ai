@@ -20,10 +20,10 @@ GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
 GROQ_KEY = os.environ.get("GROQ_API_KEY", "")
 OPENROUTER_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 
-# Configuración de modelos
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
-GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
-GROQ_VISION_MODEL = os.environ.get("GROQ_VISION_MODEL", "llama-3.2-11b-vision-preview")
+# Configuración de modelos por defecto
+GEMINI_MODEL_DEFAULT = "gemini-3-flash-preview"
+GROQ_TEXT_MODEL_DEFAULT = "openai/gpt-oss-120b"
+GROQ_VISION_MODEL_DEFAULT = "qwen/qwen3.8-27b"
 OPENROUTER_FREE_MODEL = os.environ.get("OPENROUTER_FREE_MODEL", "openrouter/free")
 OPENROUTER_CODE_MODEL = os.environ.get("OPENROUTER_CODE_MODEL", "qwen/qwen-2.5-coder-32b-instruct:free")
 
@@ -33,14 +33,22 @@ OPENROUTER_CODE_MODEL = os.environ.get("OPENROUTER_CODE_MODEL", "qwen/qwen-2.5-c
 async def call_gemini(prompt: str, history: List[Dict[str, Any]] = None) -> AsyncGenerator[str, None]:
     """
     Canal Principal: Google AI Studio (Gemini Flash).
-    Usa la API REST v1beta con SSE para evitar errores 404 de versión del SDK v1.
+    Prioridad: gemini-3-flash-preview -> gemini-2.5-flash -> gemini-2.5-flash-lite -> gemini-2.5-pro
     """
     key = os.environ.get("GEMINI_API_KEY", "")
     if not key:
         raise RuntimeError("GEMINI_API_KEY no configurada")
 
     configured_model = os.environ.get("GEMINI_MODEL", "").strip()
-    candidate_models = [m for m in [configured_model, "gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-2.0-flash-exp", "gemini-1.5-pro"] if m]
+    candidate_models = [m for m in [
+        configured_model,
+        "gemini-3-flash-preview",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-2.5-pro",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-flash"
+    ] if m]
 
     # Construir contents para la API v1beta de Gemini
     contents = []
@@ -127,11 +135,22 @@ async def call_groq(prompt: str, history: List[Dict[str, Any]] = None, images: L
             })
         messages.append({"role": "user", "content": content_parts})
         configured_vision = os.environ.get("GROQ_VISION_MODEL", "").strip()
-        candidate_models = [m for m in [configured_vision, "llama-3.2-11b-vision-preview", "llama-3.2-90b-vision-preview"] if m]
+        candidate_models = [m for m in [
+            configured_vision,
+            "qwen/qwen3.8-27b",
+            "llama-3.2-11b-vision-preview",
+            "llama-3.2-90b-vision-preview"
+        ] if m]
     else:
         messages.append({"role": "user", "content": prompt})
         configured_text = os.environ.get("GROQ_MODEL", "").strip()
-        candidate_models = [m for m in [configured_text, "llama-3.1-8b-instant", "llama-3.3-70b-versatile", "mixtral-8x7b-32768"] if m]
+        candidate_models = [m for m in [
+            configured_text,
+            "openai/gpt-oss-120b",
+            "openai/gpt-oss-20b",
+            "llama-3.1-8b-instant",
+            "llama-3.3-70b-versatile"
+        ] if m]
 
     last_error = None
     streamed_any = False
