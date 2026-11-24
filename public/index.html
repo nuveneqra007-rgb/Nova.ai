@@ -60,7 +60,16 @@
       </div>
 
       <div class="sidebar-content">
-        <div class="history-section-title">Historial de sesiones</div>
+        <div class="history-section-header">
+          <span class="history-section-title">Historial de sesiones</span>
+          <button class="clear-history-btn" id="clear-history-btn" type="button" title="Vaciar todo el historial" aria-label="Vaciar todo el historial" hidden>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="3 6 5 6 21 6"/>
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+            </svg>
+            <span>Vaciar</span>
+          </button>
+        </div>
         <div class="history-list" id="history-list" role="list"></div>
       </div>
 
@@ -79,6 +88,12 @@
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
           </button>
           <span class="active-session-title" id="active-session-title">Nueva consulta</span>
+          <button class="icon-btn" id="delete-active-chat-btn" type="button" title="Borrar este chat" aria-label="Borrar este chat" hidden>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="3 6 5 6 21 6"/>
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+            </svg>
+          </button>
         </div>
 
         <div class="topbar-zone-center" id="channel-readiness" aria-live="polite">

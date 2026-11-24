@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import cors from 'cors';
-import { initDb, saveMessage, getHistory, getSessions, deleteSession } from './src/memory.ts';
+import { initDb, saveMessage, getHistory, getSessions, deleteSession, clearAllUserSessions } from './src/memory.ts';
 import { routeAndStream } from './src/router.ts';
 import { telemetry } from './src/telemetry.ts';
 
@@ -100,6 +100,12 @@ apiRouter.get('/history', async (req, res) => {
   }
   const history = await getHistory(sessionId, userId);
   res.json({ history, session_id: sessionId, user_id: userId });
+});
+
+apiRouter.delete('/sessions', async (req, res) => {
+  const userId = getUserId(req);
+  await clearAllUserSessions(userId);
+  res.json({ success: true, user_id: userId, message: 'Historial vaciado correctamente' });
 });
 
 apiRouter.delete('/sessions/:id', async (req, res) => {

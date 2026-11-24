@@ -279,3 +279,36 @@ export async function deleteSession(userId: string, sessionId: string): Promise<
 
   return true;
 }
+
+export async function clearAllUserSessions(userId: string): Promise<boolean> {
+  const cleanUser = (userId || 'anonymous').trim().replace(/[:]/g, '_');
+  const userPrefix = `${cleanUser}::`;
+
+  for (const key of Array.from(localHistory.keys())) {
+    if (key.startsWith(userPrefix)) {
+      localHistory.delete(key);
+    }
+  }
+
+  const cfg = getSupabaseConfig();
+  if (cfg) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 5000);
+      const deleteUrl = `${cfg.url}/rest/v1/messages?session_id=like.${encodeURIComponent(userPrefix)}*`;
+      await fetch(deleteUrl, {
+        method: 'DELETE',
+        headers: {
+          apikey: cfg.key,
+          Authorization: `Bearer ${cfg.key}`,
+        },
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+    } catch (err) {
+      console.warn('[Supabase REST] Error al vaciar historial:', err instanceof Error ? err.message : err);
+    }
+  }
+
+  return true;
+}

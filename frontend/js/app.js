@@ -13,6 +13,8 @@ const newChatBtn = $('new-chat-btn');
 const sessionSearchInput = $('session-search');
 const historyList = $('history-list');
 const activeSessionTitle = $('active-session-title');
+const clearHistoryBtn = $('clear-history-btn');
+const deleteActiveChatBtn = $('delete-active-chat-btn');
 
 const messagesContainer = $('messages-container');
 const messagesWrapper = $('messages-wrapper');
@@ -468,6 +470,7 @@ async function handleSend() {
   isStreaming = true;
   sendBtn.disabled = true;
   welcomeHero.style.display = 'none';
+  if (deleteActiveChatBtn) deleteActiveChatBtn.hidden = false;
 
   if (activeSessionTitle.textContent === 'Nueva consulta') {
     const shortTitle = text ? (text.length > 48 ? text.slice(0, 48) + '…' : text) : 'Análisis visual';
@@ -588,11 +591,47 @@ function startNewChat() {
   messagesWrapper.innerHTML = '';
   messagesWrapper.appendChild(welcomeHero);
   welcomeHero.style.display = 'flex';
+  if (deleteActiveChatBtn) deleteActiveChatBtn.hidden = true;
   if (window.innerWidth <= 768) setSidebarOpen(false);
   chatTextarea.focus();
 }
 
 newChatBtn.addEventListener('click', startNewChat);
+
+if (deleteActiveChatBtn) {
+  deleteActiveChatBtn.addEventListener('click', async () => {
+    if (isStreaming) return;
+    if (!confirm('¿Deseas eliminar esta conversación?')) return;
+    await deleteChatSession(activeSessionId);
+  });
+}
+
+if (clearHistoryBtn) {
+  clearHistoryBtn.addEventListener('click', async () => {
+    if (isStreaming) return;
+    if (
+      !confirm(
+        '¿Estás seguro de que deseas vaciar todas tus conversaciones? Esta acción no se puede deshacer.'
+      )
+    ) {
+      return;
+    }
+    try {
+      const res = await fetch('/api/sessions', {
+        method: 'DELETE',
+        headers: { 'x-user-id': currentUserId },
+      });
+      if (res.ok) {
+        sessionsCache = [];
+        startNewChat();
+        renderSessionList();
+        showDockNotice('Historial vaciado correctamente.');
+      }
+    } catch {
+      showDockNotice('No se pudo vaciar el historial.');
+    }
+  });
+}
 
 let searchDebounce = null;
 sessionSearchInput.addEventListener('input', () => {
@@ -621,6 +660,10 @@ async function fetchSessions(query = '') {
 
 function renderSessionList() {
   historyList.innerHTML = '';
+
+  if (clearHistoryBtn) {
+    clearHistoryBtn.hidden = sessionsCache.length === 0;
+  }
 
   if (sessionsCache.length === 0) {
     const empty = document.createElement('div');
@@ -658,7 +701,7 @@ function renderSessionList() {
     delBtn.className = 'history-item-del-btn';
     delBtn.title = 'Eliminar conversación';
     delBtn.setAttribute('aria-label', `Eliminar conversación ${sess.title}`);
-    delBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+    delBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>`;
     delBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
       await deleteChatSession(sess.session_id);
@@ -672,12 +715,15 @@ function renderSessionList() {
 
 async function deleteChatSession(sid) {
   try {
-    await fetch(`/api/sessions/${encodeURIComponent(sid)}`, {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(sid)}`, {
       method: 'DELETE',
       headers: {
         'x-user-id': currentUserId,
       },
     });
+    if (res.ok) {
+      showDockNotice('Conversación eliminada.');
+    }
     if (activeSessionId === sid) {
       startNewChat();
     }
@@ -705,8 +751,11 @@ async function loadSessionHistory(sess) {
 
     if (entries.length === 0) {
       welcomeHero.style.display = 'flex';
+      if (deleteActiveChatBtn) deleteActiveChatBtn.hidden = true;
     } else {
       welcomeHero.style.display = 'none';
+  if (deleteActiveChatBtn) deleteActiveChatBtn.hidden = false;
+      if (deleteActiveChatBtn) deleteActiveChatBtn.hidden = false;
       entries.forEach((entry) => {
         renderUserMessage(entry.message);
         const { contentEl } = createAssistantBubble({
