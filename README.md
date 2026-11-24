@@ -5,8 +5,11 @@
 [![Express](https://img.shields.io/badge/Express-5.3-000000.svg?style=flat&logo=express&logoColor=white)](https://expressjs.com)
 [![TypeScript](https://img.shields.io/badge/TypeScript-7.0-3178C6.svg?style=flat&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 [![Node.js](https://img.shields.io/badge/Node.js-22+-339933.svg?style=flat&logo=node.js&logoColor=white)](https://nodejs.org)
+[![Google Gemini](https://img.shields.io/badge/Gemini-API%20v1beta-4285F4.svg?style=flat&logo=googlegemini&logoColor=white)](https://ai.google.dev)
+[![Groq](https://img.shields.io/badge/Groq-SDK%201.6-F55036.svg?style=flat&logo=groq&logoColor=white)](https://groq.com)
+[![OpenRouter](https://img.shields.io/badge/OpenRouter-Free%20Models-6366F1.svg?style=flat)](https://openrouter.ai)
 [![Vercel](https://img.shields.io/badge/Deploy-Vercel%20Serverless-000000.svg?style=flat&logo=vercel&logoColor=white)](https://vercel.com)
-[![Supabase](https://img.shields.io/badge/Persistencia-Supabase%20(opcional)-3ECF8E.svg?style=flat&logo=supabase&logoColor=white)](https://supabase.com)
+[![Supabase](https://img.shields.io/badge/DB-Supabase%20REST-3ECF8E.svg?style=flat&logo=supabase&logoColor=white)](https://supabase.com)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ---
