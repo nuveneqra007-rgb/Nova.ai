@@ -536,38 +536,84 @@ html, body {
 }
 
 .welcome-hero {
-  padding: 48px 0 24px;
+  padding: 100px 0 32px;
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   text-align: center;
+  margin: auto 0;
+  width: 100%;
 }
 
-.hero-eyebrow {
+.hero-brand-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  margin-bottom: 22px;
+  box-shadow: 0 0 24px rgba(255, 255, 255, 0.02);
+}
+
+.hero-sparkle {
+  color: #c084fc;
+  font-size: 0.95rem;
+  line-height: 1;
+  filter: drop-shadow(0 0 8px rgba(192, 132, 252, 0.7));
+  animation: pulse-sparkle 3.5s ease-in-out infinite;
+}
+
+@keyframes pulse-sparkle {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.85;
+  }
+  50% {
+    transform: scale(1.18);
+    opacity: 1;
+    filter: drop-shadow(0 0 12px rgba(192, 132, 252, 1));
+  }
+}
+
+.hero-brand-name {
   font-size: 0.82rem;
-  font-weight: 500;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
   color: var(--text-secondary);
-  letter-spacing: 0.01em;
-  margin-bottom: 10px;
 }
 
 .welcome-title {
-  font-size: clamp(1.75rem, 3vw, 2.35rem);
-  font-weight: 700;
-  line-height: 1.18;
-  letter-spacing: -0.03em;
+  font-size: clamp(2rem, 4.2vw, 2.85rem);
+  font-weight: 600;
+  line-height: 1.28;
+  letter-spacing: -0.035em;
   color: var(--text-primary);
-  max-width: 19ch;
+  min-height: 1.35em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   text-wrap: balance;
-  margin-bottom: 14px;
+  margin: 0;
 }
 
-.welcome-subtitle {
-  color: var(--text-secondary);
-  font-size: 0.94rem;
-  line-height: 1.65;
-  max-width: 58ch;
-  margin-bottom: 32px;
+.typewriter-cursor {
+  display: inline-block;
+  width: 2.5px;
+  height: 1.15em;
+  background: var(--text-primary);
+  margin-left: 5px;
+  vertical-align: middle;
+  border-radius: 1px;
+  animation: cursor-blink 0.95s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes cursor-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
 }
 
 /* Flujo limpio de enrutamiento */
@@ -1330,7 +1376,11 @@ html, body {
   }
 
   .welcome-hero {
-    padding: 20px 0 16px;
+    padding: 48px 0 16px;
+  }
+
+  .welcome-title {
+    font-size: 1.65rem;
   }
 
   .router-flow {

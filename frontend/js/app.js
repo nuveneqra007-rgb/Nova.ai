@@ -245,26 +245,10 @@ sendBtn.addEventListener('click', () => {
   if (!sendBtn.disabled) handleSend();
 });
 
-// ── Route Flow Nodes & Mode Sync ─────────────────────────────────────────────
-const flowNodes = document.querySelectorAll('.flow-node');
-
-function syncFlowNodesSelection() {
-  const current = modeSelector.value;
-  flowNodes.forEach((node) => {
-    node.classList.toggle('selected', node.dataset.mode === current);
-  });
-}
-
-flowNodes.forEach((node) => {
-  node.addEventListener('click', () => {
-    const mode = node.dataset.mode;
-    modeSelector.value = modeSelector.value === mode ? 'auto' : mode;
-    syncFlowNodesSelection();
-    chatTextarea.focus();
-  });
+// ── Mode Selector Listener ──────────────────────────────────────────────────
+modeSelector.addEventListener('change', () => {
+  chatTextarea.focus();
 });
-
-modeSelector.addEventListener('change', syncFlowNodesSelection);
 
 // ── Image Attachments (Vision) ───────────────────────────────────────────────
 attachBtn.addEventListener('click', () => fileInput.click());
@@ -509,6 +493,7 @@ async function handleSend() {
   isStreaming = true;
   sendBtn.disabled = true;
   welcomeHero.style.display = 'none';
+  stopTypewriter();
   if (deleteActiveChatBtn) deleteActiveChatBtn.hidden = false;
 
   if (activeSessionTitle.textContent === 'Nueva consulta') {
@@ -614,14 +599,64 @@ async function handleSend() {
   scrollToBottom();
 }
 
-// ── Quick Action Cards ───────────────────────────────────────────────────────
-document.querySelectorAll('.action-card').forEach((card) => {
-  card.addEventListener('click', () => {
-    chatTextarea.value = card.dataset.prompt || '';
-    chatTextarea.dispatchEvent(new Event('input'));
-    handleSend();
-  });
-});
+// ── Typewriter Welcome Effect ────────────────────────────────────────────────
+const typewriterEl = $('typewriter-text');
+const WELCOME_PHRASES = [
+  '¿Qué hay de nuevo hoy?',
+  'Bienvenido a Nova AI',
+  '¿En qué te puedo colaborar hoy?',
+  '¿Qué vamos a crear hoy?',
+  '¿Tienes alguna duda o idea?',
+];
+
+let typewriterTimer = null;
+let phraseIdx = 0;
+let charIdx = 0;
+let isDeleting = false;
+
+function stepTypewriter() {
+  if (!typewriterEl || welcomeHero.style.display === 'none') {
+    return;
+  }
+
+  const currentPhrase = WELCOME_PHRASES[phraseIdx];
+
+  if (isDeleting) {
+    charIdx--;
+    typewriterEl.textContent = currentPhrase.slice(0, charIdx);
+  } else {
+    charIdx++;
+    typewriterEl.textContent = currentPhrase.slice(0, charIdx);
+  }
+
+  let delay = isDeleting ? 30 : 60;
+
+  if (!isDeleting && charIdx === currentPhrase.length) {
+    delay = 2400;
+    isDeleting = true;
+  } else if (isDeleting && charIdx === 0) {
+    isDeleting = false;
+    phraseIdx = (phraseIdx + 1) % WELCOME_PHRASES.length;
+    delay = 400;
+  }
+
+  typewriterTimer = setTimeout(stepTypewriter, delay);
+}
+
+function startTypewriter() {
+  if (typewriterTimer) clearTimeout(typewriterTimer);
+  charIdx = 0;
+  isDeleting = false;
+  if (typewriterEl) typewriterEl.textContent = '';
+  stepTypewriter();
+}
+
+function stopTypewriter() {
+  if (typewriterTimer) {
+    clearTimeout(typewriterTimer);
+    typewriterTimer = null;
+  }
+}
 
 // ── Session History (Individual por usuario + Búsqueda en vivo) ──────────────
 function startNewChat() {
@@ -630,6 +665,7 @@ function startNewChat() {
   messagesWrapper.innerHTML = '';
   messagesWrapper.appendChild(welcomeHero);
   welcomeHero.style.display = 'flex';
+  startTypewriter();
   if (deleteActiveChatBtn) deleteActiveChatBtn.hidden = true;
   if (window.innerWidth <= 768) setSidebarOpen(false);
   chatTextarea.focus();
@@ -828,9 +864,11 @@ async function loadSessionHistory(sess) {
 
     if (entries.length === 0) {
       welcomeHero.style.display = 'flex';
+      startTypewriter();
       if (deleteActiveChatBtn) deleteActiveChatBtn.hidden = true;
     } else {
       welcomeHero.style.display = 'none';
+      stopTypewriter();
       if (deleteActiveChatBtn) deleteActiveChatBtn.hidden = false;
       entries.forEach((entry) => {
         renderUserMessage(entry.message);
@@ -936,8 +974,8 @@ async function fetchTelemetry() {
 }
 
 // ── Boot Initialization ──────────────────────────────────────────────────────
-syncFlowNodesSelection();
 fetchHealth();
+startTypewriter();
 fetchSessions().then(() => {
   if (activeSessionId && !isSessionDeleted(activeSessionId)) {
     const savedTitle = localStorage.getItem('nova_session_title') || 'Consulta anterior';

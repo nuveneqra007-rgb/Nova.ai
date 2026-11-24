@@ -124,54 +124,15 @@
       <div class="messages-container" id="messages-container">
         <div class="messages-wrapper" id="messages-wrapper">
 
-          <!-- Welcome Hero & Flujo de Enrutamiento -->
-          <section class="welcome-hero" id="welcome-hero" aria-label="Introducción a Nova AI">
-            <p class="hero-eyebrow">Orquestación multi-proveedor</p>
-            <h1 class="welcome-title">Inteligencia resiliente con conmutación en tiempo real</h1>
-            <p class="welcome-subtitle">
-              Enrutamiento adaptativo entre Google Gemini, Groq y OpenRouter. Si un canal alcanza su límite o falla, Nova conmuta automáticamente sin interrumpir la respuesta.
-            </p>
-
-            <!-- Flujo interactivo de prioridad por canal -->
-            <div class="router-flow" role="group" aria-label="Priorizar canal de enrutamiento">
-              <button class="flow-node" type="button" data-mode="reasoning">
-                <span class="flow-index">01.</span>
-                <span class="flow-name">Gemini</span>
-                <span class="flow-role">Razonamiento</span>
-              </button>
-              <span class="flow-arrow" aria-hidden="true">→</span>
-              <button class="flow-node" type="button" data-mode="speed">
-                <span class="flow-index">02.</span>
-                <span class="flow-name">Groq</span>
-                <span class="flow-role">Baja latencia</span>
-              </button>
-              <span class="flow-arrow" aria-hidden="true">→</span>
-              <button class="flow-node" type="button" data-mode="code">
-                <span class="flow-index">03.</span>
-                <span class="flow-name">OpenRouter</span>
-                <span class="flow-role">Código y respaldo</span>
-              </button>
+          <!-- Welcome Hero (Vista limpia y minimalista) -->
+          <section class="welcome-hero" id="welcome-hero" aria-label="Bienvenida a Nova AI">
+            <div class="hero-brand-badge" aria-hidden="true">
+              <span class="hero-sparkle">✦</span>
+              <span class="hero-brand-name">Nova AI</span>
             </div>
-
-            <!-- Tarjetas de Acceso Rápido -->
-            <div class="cards-grid">
-              <button class="action-card" type="button" data-prompt="Analiza las implicaciones de seguridad y arquitectura de un sistema multi-proveedor LLM con failover automático.">
-                <strong class="action-card-title">Arquitectura multi-proveedor</strong>
-                <span class="action-card-desc">Evalúa seguridad y resiliencia con failover automático</span>
-              </button>
-              <button class="action-card" type="button" data-prompt="Explica en 3 viñetas ultraconcisas qué es Server-Sent Events (SSE) y su ventaja sobre WebSockets.">
-                <strong class="action-card-title">Streaming SSE vs WebSockets</strong>
-                <span class="action-card-desc">Síntesis técnica directa en tres puntos clave</span>
-              </button>
-              <button class="action-card" type="button" data-prompt="Escribe un middleware en Express con TypeScript para sanitizar entradas y prevenir DoS por payload excesivo.">
-                <strong class="action-card-title">Middleware de sanitización</strong>
-                <span class="action-card-desc">Código completo y ejecutable con pruebas de verificación</span>
-              </button>
-              <button class="action-card" type="button" data-prompt="Dame una síntesis ejecutiva sobre cómo mitigar ataques de Prompt Injection en producción.">
-                <strong class="action-card-title">Mitigación de Prompt Injection</strong>
-                <span class="action-card-desc">Controles prácticos para aplicaciones en producción</span>
-              </button>
-            </div>
+            <h1 class="welcome-title typewriter-container">
+              <span id="typewriter-text"></span><span class="typewriter-cursor" aria-hidden="true"></span>
+            </h1>
           </section>
 
         </div>
