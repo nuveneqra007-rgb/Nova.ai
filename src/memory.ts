@@ -17,6 +17,7 @@ export interface SessionSummary {
 }
 
 const localHistory = new Map<string, HistoryEntry[]>();
+const deletedSessions = new Set<string>();
 
 export function toCompositeSessionId(userId: string, sessionId: string): string {
   const cleanUser = (userId || 'anonymous').trim().replace(/[:]/g, '_').slice(0, 48);
@@ -73,6 +74,9 @@ export async function saveMessage(params: {
   const compositeKey = toCompositeSessionId(uid, params.sessionId);
   const nowIso = new Date().toISOString();
 
+  deletedSessions.delete(compositeKey);
+  deletedSessions.delete(params.sessionId);
+
   const data: HistoryEntry = {
     session_id: compositeKey,
     message: params.message,
@@ -128,6 +132,9 @@ export async function getHistory(
   limit = 20
 ): Promise<HistoryEntry[]> {
   const compositeKey = toCompositeSessionId(userId, sessionId);
+  if (deletedSessions.has(compositeKey) || deletedSessions.has(sessionId)) {
+    return [];
+  }
   const cfg = getSupabaseConfig();
 
   if (cfg) {
@@ -169,10 +176,12 @@ export async function getSessions(
   const userPrefix = `${cleanUser}::`;
   const sessionsMap = new Map<string, SessionSummary>();
 
-  // 1. Cargar sesiones locales filtradas ESTRICTAMENTE por este usuario
+  // 1. Cargar sesiones locales filtradas ESTRICTAMENTE por este usuario y no eliminadas
   for (const [key, entries] of localHistory.entries()) {
     if (!key.startsWith(userPrefix) || entries.length === 0) continue;
     const rawChatId = extractSessionId(key);
+    if (deletedSessions.has(key) || deletedSessions.has(rawChatId)) continue;
+
     const first = entries[0];
     const last = entries[entries.length - 1];
     sessionsMap.set(rawChatId, {
@@ -190,7 +199,7 @@ export async function getSessions(
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 5000);
-      const queryUrl = `${cfg.url}/rest/v1/messages?select=session_id,message,provider,created_at&session_id=like.${encodeURIComponent(userPrefix)}*&order=id.desc&limit=200`;
+      const queryUrl = `${cfg.url}/rest/v1/messages?select=session_id,message,provider,created_at&session_id=like.${encodeURIComponent(userPrefix)}%25&order=id.desc&limit=200`;
       const res = await fetch(queryUrl, {
         method: 'GET',
         headers: {
@@ -213,11 +222,15 @@ export async function getSessions(
             const sid = row.session_id || '';
             if (!sid.startsWith(userPrefix)) continue;
             const chatId = extractSessionId(sid);
+            if (deletedSessions.has(sid) || deletedSessions.has(chatId)) continue;
             const list = grouped.get(chatId) || [];
             list.push(row);
             grouped.set(chatId, list);
           }
           for (const [chatId, list] of grouped.entries()) {
+            if (deletedSessions.has(toCompositeSessionId(cleanUser, chatId)) || deletedSessions.has(chatId)) {
+              continue;
+            }
             const newest = list[0];
             const oldest = list[list.length - 1];
             if (!sessionsMap.has(chatId)) {
@@ -255,14 +268,17 @@ export async function getSessions(
 
 export async function deleteSession(userId: string, sessionId: string): Promise<boolean> {
   const compositeKey = toCompositeSessionId(userId, sessionId);
+  deletedSessions.add(compositeKey);
+  deletedSessions.add(sessionId);
   localHistory.delete(compositeKey);
+  localHistory.delete(sessionId);
 
   const cfg = getSupabaseConfig();
   if (cfg) {
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 5000);
-      const deleteUrl = `${cfg.url}/rest/v1/messages?session_id=eq.${encodeURIComponent(compositeKey)}`;
+      const deleteUrl = `${cfg.url}/rest/v1/messages?or=(session_id.eq.${encodeURIComponent(compositeKey)},session_id.eq.${encodeURIComponent(sessionId)})`;
       await fetch(deleteUrl, {
         method: 'DELETE',
         headers: {
@@ -287,6 +303,8 @@ export async function clearAllUserSessions(userId: string): Promise<boolean> {
   for (const key of Array.from(localHistory.keys())) {
     if (key.startsWith(userPrefix)) {
       localHistory.delete(key);
+      deletedSessions.add(key);
+      deletedSessions.add(extractSessionId(key));
     }
   }
 
@@ -295,7 +313,7 @@ export async function clearAllUserSessions(userId: string): Promise<boolean> {
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 5000);
-      const deleteUrl = `${cfg.url}/rest/v1/messages?session_id=like.${encodeURIComponent(userPrefix)}*`;
+      const deleteUrl = `${cfg.url}/rest/v1/messages?session_id=like.${encodeURIComponent(userPrefix)}%25`;
       await fetch(deleteUrl, {
         method: 'DELETE',
         headers: {

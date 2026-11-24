@@ -73,6 +73,40 @@ function getOrCreateUserId() {
 
 const currentUserId = getOrCreateUserId();
 
+// ── Deleted Sessions Tombstone Manager (Persistencia en LocalStorage) ────────
+const DELETED_SESSIONS_KEY = 'nova_deleted_sessions';
+
+function getDeletedSessionIds() {
+  try {
+    const raw = localStorage.getItem(DELETED_SESSIONS_KEY);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
+    return new Set(Array.isArray(arr) ? arr : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function markSessionDeleted(sid) {
+  if (!sid) return;
+  const set = getDeletedSessionIds();
+  set.add(sid);
+  try {
+    const arr = Array.from(set).slice(-200);
+    localStorage.setItem(DELETED_SESSIONS_KEY, JSON.stringify(arr));
+  } catch {}
+}
+
+function isSessionDeleted(sid) {
+  if (!sid) return false;
+  return getDeletedSessionIds().has(sid);
+}
+
+function getDeletedSessionsHeader() {
+  const arr = Array.from(getDeletedSessionIds()).slice(-30);
+  return arr.join(',');
+}
+
 function generateSessionId() {
   const rand = typeof crypto !== 'undefined' && crypto.getRandomValues
     ? Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join('')
@@ -82,7 +116,7 @@ function generateSessionId() {
 
 function getOrCreateSessionId() {
   let sid = localStorage.getItem('nova_active_chat_id') || localStorage.getItem('nova_session_id');
-  if (!sid) {
+  if (!sid || isSessionDeleted(sid)) {
     sid = generateSessionId();
     localStorage.setItem('nova_active_chat_id', sid);
   }
@@ -467,6 +501,11 @@ async function handleSend() {
   const sentImages = [...attachedImages];
   if ((!text && sentImages.length === 0) || isStreaming) return;
 
+  if (!activeSessionId || isSessionDeleted(activeSessionId)) {
+    activeSessionId = generateSessionId();
+    localStorage.setItem('nova_active_chat_id', activeSessionId);
+  }
+
   isStreaming = true;
   sendBtn.disabled = true;
   welcomeHero.style.display = 'none';
@@ -616,19 +655,32 @@ if (clearHistoryBtn) {
     ) {
       return;
     }
+
+    // 1. Marcar todas las sesiones locales como eliminadas de inmediato
+    sessionsCache.forEach((s) => {
+      if (s && s.session_id) markSessionDeleted(s.session_id);
+    });
+    if (activeSessionId) {
+      markSessionDeleted(activeSessionId);
+    }
+
+    // 2. Limpiar UI y abrir chat nuevo al instante
+    sessionsCache = [];
+    renderSessionList();
+    startNewChat();
+    showDockNotice('Historial vaciado correctamente.');
+
+    // 3. Notificar al backend en segundo plano
     try {
-      const res = await fetch('/api/sessions', {
+      await fetch('/api/sessions', {
         method: 'DELETE',
-        headers: { 'x-user-id': currentUserId },
+        headers: {
+          'x-user-id': currentUserId,
+          'x-deleted-sessions': getDeletedSessionsHeader(),
+        },
       });
-      if (res.ok) {
-        sessionsCache = [];
-        startNewChat();
-        renderSessionList();
-        showDockNotice('Historial vaciado correctamente.');
-      }
     } catch {
-      showDockNotice('No se pudo vaciar el historial.');
+      // Ignorar fallo puntual
     }
   });
 }
@@ -647,11 +699,16 @@ async function fetchSessions(query = '') {
     const res = await fetch(`/api/sessions${qs}`, {
       headers: {
         'x-user-id': currentUserId,
+        'x-deleted-sessions': getDeletedSessionsHeader(),
       },
     });
     if (!res.ok) return;
     const data = await res.json();
-    sessionsCache = Array.isArray(data.sessions) ? data.sessions : [];
+    const rawSessions = Array.isArray(data.sessions) ? data.sessions : [];
+
+    // Filtro estricto: ninguna sesión marcada como eliminada podrá reaparecer
+    const deletedSet = getDeletedSessionIds();
+    sessionsCache = rawSessions.filter((s) => s && s.session_id && !deletedSet.has(s.session_id));
     renderSessionList();
   } catch {
     // Silencioso en fallo transitorio
@@ -714,31 +771,51 @@ function renderSessionList() {
 }
 
 async function deleteChatSession(sid) {
+  if (!sid) return;
+
+  // 1. Marcar inmediatamente como eliminada permanentemente en el cliente
+  markSessionDeleted(sid);
+
+  // 2. Desaparecerla de inmediato del menú visible (sin esperar red)
+  sessionsCache = sessionsCache.filter((s) => s.session_id !== sid);
+  renderSessionList();
+
+  // 3. Si era el chat abierto, resetear la pantalla e iniciar chat en blanco
+  if (activeSessionId === sid) {
+    startNewChat();
+  }
+
+  showDockNotice('Conversación eliminada.');
+
+  // 4. Notificar al backend para que elimine en memoria y Supabase
   try {
-    const res = await fetch(`/api/sessions/${encodeURIComponent(sid)}`, {
+    await fetch(`/api/sessions/${encodeURIComponent(sid)}`, {
       method: 'DELETE',
       headers: {
         'x-user-id': currentUserId,
+        'x-deleted-sessions': getDeletedSessionsHeader(),
       },
     });
-    if (res.ok) {
-      showDockNotice('Conversación eliminada.');
-    }
-    if (activeSessionId === sid) {
-      startNewChat();
-    }
-    await fetchSessions(sessionSearchInput.value);
-  } catch {
-    showDockNotice('No se pudo eliminar la conversación.');
+  } catch (err) {
+    console.warn('[Session] Error notificando eliminación:', err);
   }
+
+  // 5. Re-sincronizar aplicando filtro estricto anti-reaparición
+  await fetchSessions(sessionSearchInput.value);
 }
 
 async function loadSessionHistory(sess) {
-  if (isStreaming) return;
+  if (isStreaming || !sess || !sess.session_id) return;
+  if (isSessionDeleted(sess.session_id)) {
+    startNewChat();
+    return;
+  }
+
   try {
     const res = await fetch(`/api/history?session_id=${encodeURIComponent(sess.session_id)}`, {
       headers: {
         'x-user-id': currentUserId,
+        'x-deleted-sessions': getDeletedSessionsHeader(),
       },
     });
     if (!res.ok) return;
@@ -754,7 +831,6 @@ async function loadSessionHistory(sess) {
       if (deleteActiveChatBtn) deleteActiveChatBtn.hidden = true;
     } else {
       welcomeHero.style.display = 'none';
-  if (deleteActiveChatBtn) deleteActiveChatBtn.hidden = false;
       if (deleteActiveChatBtn) deleteActiveChatBtn.hidden = false;
       entries.forEach((entry) => {
         renderUserMessage(entry.message);
@@ -863,9 +939,11 @@ async function fetchTelemetry() {
 syncFlowNodesSelection();
 fetchHealth();
 fetchSessions().then(() => {
-  if (activeSessionId) {
+  if (activeSessionId && !isSessionDeleted(activeSessionId)) {
     const savedTitle = localStorage.getItem('nova_session_title') || 'Consulta anterior';
     loadSessionHistory({ session_id: activeSessionId, title: savedTitle });
+  } else {
+    startNewChat();
   }
 });
 fetchTelemetry();

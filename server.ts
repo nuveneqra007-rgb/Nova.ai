@@ -41,7 +41,7 @@ app.use(
     },
     credentials: true,
     methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-user-id', 'X-Requested-With'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-user-id', 'x-deleted-sessions', 'X-Requested-With'],
   })
 );
 
@@ -62,6 +62,19 @@ function getUserId(req: express.Request): string {
   return 'anonymous';
 }
 
+function processDeletedSessionsHeader(req: express.Request, userId: string): void {
+  const headerVal = req.headers['x-deleted-sessions'];
+  if (typeof headerVal === 'string' && headerVal.trim()) {
+    const ids = headerVal
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    for (const id of ids.slice(0, 50)) {
+      void deleteSession(userId, id);
+    }
+  }
+}
+
 apiRouter.get('/health', (_req, res) => {
   res.json({
     status: 'online',
@@ -80,6 +93,7 @@ apiRouter.get('/telemetry', (_req, res) => {
 
 apiRouter.get('/sessions', async (req, res) => {
   const userId = getUserId(req);
+  processDeletedSessionsHeader(req, userId);
   const query = typeof req.query.q === 'string' ? req.query.q : '';
   const sessions = await getSessions(userId, query);
   res.json({ sessions, user_id: userId });
@@ -87,6 +101,7 @@ apiRouter.get('/sessions', async (req, res) => {
 
 apiRouter.get('/history', async (req, res) => {
   const userId = getUserId(req);
+  processDeletedSessionsHeader(req, userId);
   const sessionId =
     typeof req.query.session_id === 'string'
       ? req.query.session_id.trim()
@@ -104,12 +119,14 @@ apiRouter.get('/history', async (req, res) => {
 
 apiRouter.delete('/sessions', async (req, res) => {
   const userId = getUserId(req);
+  processDeletedSessionsHeader(req, userId);
   await clearAllUserSessions(userId);
   res.json({ success: true, user_id: userId, message: 'Historial vaciado correctamente' });
 });
 
 apiRouter.delete('/sessions/:id', async (req, res) => {
   const userId = getUserId(req);
+  processDeletedSessionsHeader(req, userId);
   const sessionId = req.params.id;
   if (!sessionId) {
     res.status(400).json({ detail: 'id es requerido' });
