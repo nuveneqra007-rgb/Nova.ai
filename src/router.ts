@@ -1,0 +1,465 @@
+import { GoogleGenAI } from '@google/genai';
+import Groq from 'groq-sdk';
+import type { HistoryEntry } from './memory.ts';
+import { telemetry } from './telemetry.ts';
+
+const SYSTEM_PROMPT = `Eres "Nova", un motor de inteligencia multi-proveedor avanzado.
+REGLAS:
+1. Responde de forma directa, analítica y sin relleno superfluo.
+2. Si generas código, entrega siempre código COMPLETO, ejecutable, con comentarios mínimos y OBLIGATORIAMENTE un bloque final:
+\`\`\`text
+// CÓMO PROBARLO
+// [Instrucciones precisas de ejecución paso a paso]
+\`\`\`
+3. Mantén un formato Markdown limpio con tablas y listas cuando aporte claridad.`;
+
+export interface RouterEvent {
+  type: 'connecting' | 'chunk' | 'failover' | 'error' | 'done';
+  provider?: string;
+  text?: string;
+  from_provider?: string;
+  to_provider?: string;
+  reason?: string;
+  message?: string;
+  details?: Array<{ from_provider: string; error: string; latency_ms: number }>;
+  retry_seconds?: number;
+  latency_ms?: number;
+  failover_note?: string;
+  full_text?: string;
+}
+
+function parseDataUrl(dataUrl: string): { mimeType: string; data: string } | null {
+  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+  if (!match) return null;
+  return { mimeType: match[1], data: match[2] };
+}
+
+async function* callGemini(
+  prompt: string,
+  history: HistoryEntry[] = [],
+  images: string[] | null = null
+): AsyncGenerator<string, void, unknown> {
+  const apiKey = (process.env.GEMINI_API_KEY || '').trim();
+  if (!apiKey) {
+    throw new Error('GEMINI_API_KEY no configurada');
+  }
+
+  const ai = new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      },
+    },
+  });
+
+  const configuredModel = (process.env.GEMINI_MODEL || '').trim();
+  const candidateModels = Array.from(
+    new Set([configuredModel, 'gemini-4-hydrogen', 'gemini-3.1-flash-lite'].filter(Boolean))
+  );
+
+  const contents: Array<{
+    role: 'user' | 'model';
+    parts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }>;
+  }> = [];
+
+  for (const h of history) {
+    contents.push({ role: 'user', parts: [{ text: h.message }] });
+    contents.push({ role: 'model', parts: [{ text: h.response }] });
+  }
+
+  const userParts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }> = [];
+  if (images && images.length > 0) {
+    for (const img of images.slice(0, 3)) {
+      const parsed = parseDataUrl(img);
+      if (parsed) {
+        userParts.push({ inlineData: parsed });
+      }
+    }
+  }
+  userParts.push({ text: prompt });
+  contents.push({ role: 'user', parts: userParts });
+
+  let lastError: string | null = null;
+  let streamedAny = false;
+
+  for (const modelName of candidateModels) {
+    try {
+      const responseStream = await ai.models.generateContentStream({
+        model: modelName,
+        contents,
+        config: {
+          systemInstruction: SYSTEM_PROMPT,
+        },
+      });
+
+      for await (const chunk of responseStream) {
+        const text = chunk.text || '';
+        if (text) {
+          streamedAny = true;
+          yield text;
+        }
+      }
+
+      if (streamedAny) {
+        return;
+      }
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      lastError = errMsg;
+      if (errMsg.includes('404') || errMsg.toLowerCase().includes('not found')) {
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw new Error(`Google AI Studio error: ${lastError || 'No se pudo conectar a ningún modelo candidato'}`);
+}
+
+async function* callGroq(
+  prompt: string,
+  history: HistoryEntry[] = [],
+  images: string[] | null = null
+): AsyncGenerator<string, void, unknown> {
+  const apiKey = (process.env.GROQ_API_KEY || '').trim();
+  if (!apiKey) {
+    throw new Error('GROQ_API_KEY no configurada');
+  }
+
+  const client = new Groq({ apiKey });
+  const maxTokens = Number(process.env.GROQ_MAX_TOKENS) || 2000;
+
+  type GroqMessage =
+    | { role: 'system' | 'assistant'; content: string }
+    | {
+        role: 'user';
+        content:
+          | string
+          | Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }>;
+      };
+
+  const messages: GroqMessage[] = [{ role: 'system', content: SYSTEM_PROMPT }];
+  for (const h of history) {
+    messages.push({ role: 'user', content: h.message });
+    messages.push({ role: 'assistant', content: h.response });
+  }
+
+  const isVision = Boolean(images && images.length > 0);
+  let candidateModels: string[];
+
+  if (isVision && images) {
+    const contentParts: Array<
+      { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }
+    > = [{ type: 'text', text: prompt }];
+    for (const img of images.slice(0, 3)) {
+      contentParts.push({ type: 'image_url', image_url: { url: img } });
+    }
+    messages.push({ role: 'user', content: contentParts });
+
+    const configuredVision = (process.env.GROQ_VISION_MODEL || '').trim();
+    candidateModels = Array.from(
+      new Set(
+        [
+          configuredVision,
+          'llama-3.2-11b-vision-preview',
+          'llama-3.2-90b-vision-preview',
+        ].filter(Boolean)
+      )
+    );
+  } else {
+    messages.push({ role: 'user', content: prompt });
+    const configuredText = (process.env.GROQ_MODEL || '').trim();
+    candidateModels = Array.from(
+      new Set(
+        [
+          configuredText,
+          'llama-3.3-70b-versatile',
+          'llama-3.1-8b-instant',
+        ].filter(Boolean)
+      )
+    );
+  }
+
+  let lastError: string | null = null;
+  let streamedAny = false;
+
+  for (const modelName of candidateModels) {
+    try {
+      const completion = await client.chat.completions.create({
+        model: modelName,
+        messages: messages as Parameters<typeof client.chat.completions.create>[0]['messages'],
+        temperature: 0.7,
+        max_tokens: maxTokens,
+        stream: true,
+      });
+
+      for await (const chunk of completion) {
+        const text = chunk.choices?.[0]?.delta?.content || '';
+        if (text) {
+          streamedAny = true;
+          yield text;
+        }
+      }
+
+      if (streamedAny) {
+        return;
+      }
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      lastError = errMsg;
+      if (
+        errMsg.includes('404') ||
+        errMsg.includes('does not exist') ||
+        errMsg.includes('model_not_found')
+      ) {
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw new Error(`Groq error: ${lastError || 'No se pudo inicializar ningún modelo de Groq'}`);
+}
+
+async function* callOpenRouter(
+  prompt: string,
+  options: { modelName?: string; history?: HistoryEntry[]; isCode?: boolean } = {}
+): AsyncGenerator<string, void, unknown> {
+  const apiKey = (process.env.OPENROUTER_API_KEY || '').trim();
+  if (!apiKey) {
+    throw new Error('OPENROUTER_API_KEY no configurada');
+  }
+
+  const { modelName, history = [], isCode = false } = options;
+
+  let candidateModels: string[];
+  if (isCode) {
+    const configuredCode = (process.env.OPENROUTER_CODE_MODEL || '').trim();
+    candidateModels = Array.from(
+      new Set(
+        [
+          modelName || configuredCode,
+          'qwen/qwen-2.5-coder-32b-instruct:free',
+          'openrouter/auto-code',
+          'openrouter/free',
+          'openrouter/auto',
+        ].filter(Boolean)
+      )
+    );
+  } else {
+    const configuredFree = (process.env.OPENROUTER_FREE_MODEL || '').trim();
+    candidateModels = Array.from(
+      new Set(
+        [
+          modelName || configuredFree,
+          'openrouter/free',
+          'openrouter/auto',
+          'meta-llama/llama-3.2-3b-instruct:free',
+          'mistralai/mistral-7b-instruct:free',
+        ].filter(Boolean)
+      )
+    );
+  }
+
+  const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+    { role: 'system', content: SYSTEM_PROMPT },
+  ];
+  for (const h of history) {
+    messages.push({ role: 'user', content: h.message });
+    messages.push({ role: 'assistant', content: h.response });
+  }
+  messages.push({ role: 'user', content: prompt });
+
+  let lastError: string | null = null;
+  let streamedAny = false;
+
+  for (const chosenModel of candidateModels) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 35000);
+
+      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'HTTP-Referer': 'https://nova-ai.vercel.app',
+          'X-Title': 'Nova AI',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: chosenModel,
+          messages,
+          stream: true,
+          temperature: isCode ? 0.6 : 0.7,
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+
+      if (!response.ok || !response.body) {
+        const errBody = await response.text().catch(() => '');
+        lastError = `HTTP ${response.status}: ${errBody.slice(0, 100)}`;
+        continue;
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const rawLine of lines) {
+          const line = rawLine.trim();
+          if (!line.startsWith('data: ')) continue;
+          const dataStr = line.slice(6).trim();
+          if (dataStr === '[DONE]') break;
+          try {
+            const parsed = JSON.parse(dataStr) as {
+              choices?: Array<{ delta?: { content?: string } }>;
+            };
+            const token = parsed.choices?.[0]?.delta?.content || '';
+            if (token) {
+              streamedAny = true;
+              yield token;
+            }
+          } catch {
+            continue;
+          }
+        }
+      }
+
+      if (streamedAny) {
+        return;
+      }
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+      continue;
+    }
+  }
+
+  throw new Error(
+    `OpenRouter error: ${lastError || 'No se pudo conectar a ningún modelo candidato en OpenRouter'}`
+  );
+}
+
+export async function* routeAndStream(params: {
+  prompt: string;
+  mode?: string;
+  history?: HistoryEntry[];
+  images?: string[] | null;
+}): AsyncGenerator<RouterEvent, void, unknown> {
+  const { prompt, mode = 'auto', history = [], images = null } = params;
+  const failoverLog: Array<{ from_provider: string; error: string; latency_ms: number }> = [];
+  const startTime = Date.now();
+
+  type ChainEntry = [string, () => AsyncGenerator<string, void, unknown>];
+  let chain: ChainEntry[];
+
+  if (images && images.length > 0) {
+    chain = [
+      ['Google AI Studio', () => callGemini(prompt, history, images)],
+      ['Groq Vision', () => callGroq(prompt, history, images)],
+      ['OpenRouter Vision', () => callOpenRouter(prompt, { modelName: 'openrouter/free', history })],
+    ];
+  } else if (mode === 'code') {
+    chain = [
+      ['OpenRouter Code', () => callOpenRouter(prompt, { isCode: true, history })],
+      ['Google AI Studio', () => callGemini(prompt, history)],
+      ['Groq', () => callGroq(prompt, history)],
+    ];
+  } else if (mode === 'speed') {
+    chain = [
+      ['Groq', () => callGroq(prompt, history)],
+      ['Google AI Studio', () => callGemini(prompt, history)],
+      ['OpenRouter', () => callOpenRouter(prompt, { isCode: false, history })],
+    ];
+  } else {
+    chain = [
+      ['Google AI Studio', () => callGemini(prompt, history)],
+      ['Groq', () => callGroq(prompt, history)],
+      ['OpenRouter', () => callOpenRouter(prompt, { isCode: false, history })],
+    ];
+  }
+
+  let activeProvider: string | null = null;
+  let streamSuccessful = false;
+  let fullResponseText = '';
+
+  for (let i = 0; i < chain.length; i++) {
+    const [providerName, providerCallable] = chain[i];
+    const provStart = Date.now();
+    try {
+      yield { type: 'connecting', provider: providerName };
+
+      let firstChunk = true;
+      for await (const chunk of providerCallable()) {
+        if (firstChunk) {
+          activeProvider = providerName;
+          firstChunk = false;
+        }
+        fullResponseText += chunk;
+        yield { type: 'chunk', text: chunk, provider: providerName };
+      }
+
+      if (!firstChunk) {
+        streamSuccessful = true;
+        const latencyMs = Date.now() - provStart;
+        telemetry.recordRequest(providerName, latencyMs);
+        break;
+      }
+      throw new Error(`${providerName} no devolvió contenido`);
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      const failoverLatency = Date.now() - provStart;
+      failoverLog.push({
+        from_provider: providerName,
+        error: errMsg,
+        latency_ms: failoverLatency,
+      });
+
+      if (i + 1 < chain.length) {
+        const nextProv = chain[i + 1][0];
+        telemetry.recordFailover(providerName, nextProv, errMsg.slice(0, 50), failoverLatency);
+        yield {
+          type: 'failover',
+          from_provider: providerName,
+          to_provider: nextProv,
+          reason: errMsg.slice(0, 60),
+        };
+      }
+    }
+  }
+
+  const totalLatencyMs = Date.now() - startTime;
+
+  if (!streamSuccessful || !activeProvider) {
+    yield {
+      type: 'error',
+      message:
+        'Todos los proveedores se encuentran temporalmente agotados o con límite de cuota (429/5xx).',
+      details: failoverLog,
+      retry_seconds: 60,
+    };
+  } else {
+    let failoverNote = '';
+    if (failoverLog.length > 0) {
+      const lastFail = failoverLog[failoverLog.length - 1];
+      failoverNote = `\n\n> ↳ *Conmutado automáticamente a ${activeProvider} por incidencia en ${lastFail.from_provider}.*`;
+    }
+
+    yield {
+      type: 'done',
+      provider: activeProvider,
+      latency_ms: Math.round(totalLatencyMs * 10) / 10,
+      failover_note: failoverNote,
+      full_text: fullResponseText,
+    };
+  }
+}

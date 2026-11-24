@@ -1,10 +1,19 @@
 // ==============================================================================
-// NOVA AI v2 — CLIENT CONTROLLER & STREAMING ENGINE
+// NOVA AI — CLIENT CONTROLLER, STREAMING SSE & SESSION WORKSPACE
 // ==============================================================================
 
-const $ = id => document.getElementById(id);
+const $ = (id) => document.getElementById(id);
 
-// DOM Elements
+// Core DOM
+const sidebar = $('sidebar');
+const drawerBackdrop = $('drawer-backdrop');
+const menuToggleBtn = $('menu-toggle-btn');
+const sidebarCloseBtn = $('sidebar-close-btn');
+const newChatBtn = $('new-chat-btn');
+const sessionSearchInput = $('session-search');
+const historyList = $('history-list');
+const activeSessionTitle = $('active-session-title');
+
 const messagesContainer = $('messages-container');
 const messagesWrapper = $('messages-wrapper');
 const welcomeHero = $('welcome-hero');
@@ -14,12 +23,20 @@ const modeSelector = $('mode-selector');
 const attachBtn = $('attach-btn');
 const fileInput = $('file-input');
 const imagePreviews = $('image-previews');
-const menuToggleBtn = $('menu-toggle-btn');
-const sidebar = $('sidebar');
-const newChatBtn = $('new-chat-btn');
-const historyList = $('history-list');
+const dockNotice = $('dock-notice');
 
-// Telemetry DOM
+// Topbar & Telemetry Drawer DOM
+const statusGemini = $('status-gemini');
+const statusGroq = $('status-groq');
+const statusOpenRouter = $('status-openrouter');
+const telemetryToggleBtn = $('telemetry-toggle-btn');
+const telemetryCloseBtn = $('telemetry-close-btn');
+const telemetryDrawer = $('telemetry-drawer');
+
+const healthGemini = $('health-gemini');
+const healthGroq = $('health-groq');
+const healthOpenRouter = $('health-openrouter');
+
 const barGemini = $('bar-gemini');
 const barGroq = $('bar-groq');
 const barRouter = $('bar-router');
@@ -28,21 +45,106 @@ const txtGroq = $('txt-groq');
 const txtRouter = $('txt-router');
 const metricRequests = $('metric-requests');
 const metricFailovers = $('metric-failovers');
+const metricLatGemini = $('metric-lat-gemini');
+const metricLatGroq = $('metric-lat-groq');
 const eventFeed = $('event-feed');
 
-// State
+// Application State
 let isStreaming = false;
-let attachedImages = []; // base64 strings
+let attachedImages = [];
+let sessionsCache = [];
+let activeSessionId = getOrCreateSessionId();
+let noticeTimer = null;
 
-// ── Manejo de Sesión Aislada ─────────────────────────────────────────────────
-function getSessionId() {
+// ── Session Management ───────────────────────────────────────────────────────
+function generateSessionId() {
+  return (
+    'sess_' +
+    Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) =>
+      b.toString(16).padStart(2, '0')
+    ).join('')
+  );
+}
+
+function getOrCreateSessionId() {
   let sid = localStorage.getItem('nova_session_id');
   if (!sid) {
-    sid = 'sess_' + Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
+    sid = generateSessionId();
     localStorage.setItem('nova_session_id', sid);
   }
   return sid;
 }
+
+function setActiveSession(sid, titleText = 'Nueva consulta') {
+  activeSessionId = sid;
+  localStorage.setItem('nova_session_id', sid);
+  activeSessionTitle.textContent = titleText;
+  renderSessionList();
+}
+
+// ── Inline Non-Blocking Dock Notice ──────────────────────────────────────────
+function showDockNotice(msg) {
+  if (!msg) return;
+  dockNotice.textContent = msg;
+  dockNotice.hidden = false;
+  if (noticeTimer) clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(() => {
+    dockNotice.hidden = true;
+    dockNotice.textContent = '';
+  }, 5000);
+}
+
+// ── Drawer & Sidebar Controls ────────────────────────────────────────────────
+function syncBackdrop() {
+  const isSidebarOpen = sidebar.classList.contains('open');
+  const isTelemetryOpen = telemetryDrawer.classList.contains('open');
+  if (isSidebarOpen || isTelemetryOpen) {
+    drawerBackdrop.classList.add('visible');
+  } else {
+    drawerBackdrop.classList.remove('visible');
+  }
+}
+
+function setTelemetryOpen(open) {
+  telemetryDrawer.classList.toggle('open', open);
+  telemetryDrawer.setAttribute('aria-hidden', String(!open));
+  telemetryToggleBtn.setAttribute('aria-expanded', String(open));
+  if (open) {
+    fetchTelemetry();
+    fetchHealth();
+  }
+  syncBackdrop();
+}
+
+function setSidebarOpen(open) {
+  sidebar.classList.toggle('open', open);
+  syncBackdrop();
+}
+
+telemetryToggleBtn.addEventListener('click', () => {
+  const next = !telemetryDrawer.classList.contains('open');
+  setTelemetryOpen(next);
+});
+
+telemetryCloseBtn.addEventListener('click', () => setTelemetryOpen(false));
+menuToggleBtn.addEventListener('click', () => setSidebarOpen(true));
+sidebarCloseBtn.addEventListener('click', () => setSidebarOpen(false));
+
+drawerBackdrop.addEventListener('click', () => {
+  setSidebarOpen(false);
+  setTelemetryOpen(false);
+});
+
+document.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    if (window.innerWidth <= 768) setSidebarOpen(true);
+    sessionSearchInput.focus();
+  } else if (e.key === 'Escape') {
+    if (telemetryDrawer.classList.contains('open')) setTelemetryOpen(false);
+    if (sidebar.classList.contains('open')) setSidebarOpen(false);
+  }
+});
 
 // ── Textarea Autoexpand & Input Handling ─────────────────────────────────────
 chatTextarea.addEventListener('input', () => {
@@ -60,19 +162,41 @@ chatTextarea.addEventListener('keydown', (e) => {
 
 sendBtn.addEventListener('click', handleSend);
 
-// ── Manejo de Imágenes (Visión) ──────────────────────────────────────────────
+// ── Route Flow Nodes & Mode Sync ─────────────────────────────────────────────
+const flowNodes = document.querySelectorAll('.flow-node');
+
+function syncFlowNodesSelection() {
+  const current = modeSelector.value;
+  flowNodes.forEach((node) => {
+    node.classList.toggle('selected', node.dataset.mode === current);
+  });
+}
+
+flowNodes.forEach((node) => {
+  node.addEventListener('click', () => {
+    const mode = node.dataset.mode;
+    modeSelector.value = modeSelector.value === mode ? 'auto' : mode;
+    syncFlowNodesSelection();
+    chatTextarea.focus();
+  });
+});
+
+modeSelector.addEventListener('change', syncFlowNodesSelection);
+
+// ── Image Attachments (Vision) ───────────────────────────────────────────────
 attachBtn.addEventListener('click', () => fileInput.click());
 
 fileInput.addEventListener('change', async (e) => {
-  const files = Array.from(e.target.files);
+  const files = Array.from(e.target.files || []);
   if (attachedImages.length + files.length > 3) {
-    alert("Máximo 3 imágenes por solicitud.");
+    showDockNotice('Máximo 3 imágenes permitidas por solicitud.');
+    fileInput.value = '';
     return;
   }
 
   for (const file of files) {
     if (file.size > 20 * 1024 * 1024) {
-      alert(`La imagen "${file.name}" supera el límite estricto de 20MB.`);
+      showDockNotice(`La imagen "${file.name}" supera el límite de 20 MB.`);
       continue;
     }
     const b64 = await toBase64(file);
@@ -87,179 +211,42 @@ function toBase64(file) {
     const reader = new FileReader();
     reader.readAsDataURL(file);
     reader.onload = () => resolve(reader.result);
-    reader.onerror = error => reject(error);
+    reader.onerror = (error) => reject(error);
   });
 }
 
 function renderImagePreviews() {
   imagePreviews.innerHTML = '';
+  if (attachedImages.length === 0) {
+    imagePreviews.hidden = true;
+    return;
+  }
+  imagePreviews.hidden = false;
   attachedImages.forEach((src, idx) => {
     const thumb = document.createElement('div');
-    thumb.style.cssText = 'position:relative; width:44px; height:44px; border-radius:6px; overflow:hidden; border:1px solid var(--border-focus);';
-    thumb.innerHTML = `
-      <img src="${src}" style="width:100%; height:100%; object-fit:cover;">
-      <button style="position:absolute; top:2px; right:2px; background:rgba(0,0,0,0.7); color:#fff; border:none; border-radius:50%; width:14px; height:14px; font-size:10px; cursor:pointer;" onclick="removeImage(${idx})">×</button>
-    `;
+    thumb.className = 'preview-thumb';
+
+    const img = document.createElement('img');
+    img.src = src;
+    img.alt = `Imagen adjunta ${idx + 1}`;
+
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'preview-remove-btn';
+    removeBtn.setAttribute('aria-label', `Quitar imagen ${idx + 1}`);
+    removeBtn.textContent = '×';
+    removeBtn.addEventListener('click', () => {
+      attachedImages.splice(idx, 1);
+      renderImagePreviews();
+    });
+
+    thumb.appendChild(img);
+    thumb.appendChild(removeBtn);
     imagePreviews.appendChild(thumb);
   });
 }
 
-window.removeImage = function(idx) {
-  attachedImages.splice(idx, 1);
-  renderImagePreviews();
-};
-
-// ── Envío y Streaming SSE ────────────────────────────────────────────────────
-async function handleSend() {
-  const text = chatTextarea.value.trim();
-  if (!text || isStreaming) return;
-
-  isStreaming = true;
-  sendBtn.disabled = true;
-  welcomeHero.style.display = 'none';
-
-  // 1. Renderizar mensaje de usuario
-  renderUserMessage(text, attachedImages);
-  chatTextarea.value = '';
-  chatTextarea.style.height = 'auto';
-  const sentImages = [...attachedImages];
-  attachedImages = [];
-  renderImagePreviews();
-
-  // 2. Renderizar burbuja del asistente con skeleton loader inicial
-  const { bubbleEl, contentEl, badgeEl, routingNoteEl } = createAssistantBubble();
-  scrollToBottom();
-
-  const sid = getSessionId();
-  const selectedMode = modeSelector.value;
-
-  try {
-    const response = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        message: text,
-        mode: selectedMode,
-        session_id: sid,
-        images: sentImages.length > 0 ? sentImages : null
-      })
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP error ${response.status}`);
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let accumulatedText = "";
-    let isFirstChunk = true;
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      const rawChunk = decoder.decode(value);
-      const lines = rawChunk.split('\n');
-
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          try {
-            const event = JSON.parse(line.slice(6));
-
-            if (event.type === 'connecting') {
-              badgeEl.textContent = `✦ Conectando con ${event.provider}...`;
-            } else if (event.type === 'failover') {
-              badgeEl.textContent = `⚠ Conmutando a ${event.to_provider}...`;
-              badgeEl.className = 'routing-badge groq';
-            } else if (event.type === 'chunk') {
-              if (isFirstChunk) {
-                contentEl.innerHTML = ''; // Remover skeleton
-                isFirstChunk = false;
-              }
-              accumulatedText += event.text;
-              contentEl.innerHTML = sanitizeMarkdown(accumulatedText);
-              scrollToBottom();
-            } else if (event.type === 'done') {
-              const provClass = (event.provider || '').toLowerCase().includes('gemini') ? 'gemini'
-                              : (event.provider || '').toLowerCase().includes('groq') ? 'groq' : 'openrouter';
-              badgeEl.className = `routing-badge ${provClass}`;
-              badgeEl.textContent = `✦ ${event.provider} · ${event.latency_ms}ms`;
-
-              if (event.failover_note) {
-                routingNoteEl.innerHTML = sanitizeMarkdown(event.failover_note);
-              }
-            } else if (event.type === 'error') {
-              contentEl.innerHTML = `<span style="color:var(--status-error)">⚠️ ${event.message}</span>`;
-            }
-          } catch (e) {
-            // Ignorar fragmentos parciales JSON
-          }
-        }
-      }
-    }
-
-    updateHistorySidebar(text);
-    fetchTelemetry();
-
-  } catch (err) {
-    contentEl.innerHTML = `<span style="color:var(--status-error)">⚠️ Error de conexión con el motor Nova. Verifica tu red.</span>`;
-  }
-
-  isStreaming = false;
-  sendBtn.disabled = !chatTextarea.value.trim();
-  scrollToBottom();
-}
-
-function renderUserMessage(text, images) {
-  const row = document.createElement('div');
-  row.className = 'message-row user';
-
-  let imgsHtml = '';
-  if (images && images.length > 0) {
-    imgsHtml = '<div style="display:flex; gap:6px; margin-bottom:8px;">' +
-      images.map(src => `<img src="${src}" style="width:50px; height:50px; border-radius:6px; object-fit:cover;">`).join('') +
-      '</div>';
-  }
-
-  row.innerHTML = `<div class="user-bubble">${imgsHtml}${escapeHTML(text)}</div>`;
-  messagesWrapper.appendChild(row);
-}
-
-function createAssistantBubble() {
-  const row = document.createElement('div');
-  row.className = 'message-row';
-
-  const bubble = document.createElement('div');
-  bubble.className = 'assistant-bubble';
-
-  bubble.innerHTML = `
-    <div class="proof-of-routing">
-      <div class="routing-left">
-        <span class="routing-badge gemini" id="current-badge">✦ Conectando...</span>
-      </div>
-      <span style="color:var(--text-muted); font-size:11px;">Proof of Routing</span>
-    </div>
-    <div class="assistant-content">
-      <div class="skeleton-loader">
-        <div class="skeleton-line" style="width: 85%"></div>
-        <div class="skeleton-line" style="width: 65%"></div>
-        <div class="skeleton-line" style="width: 45%"></div>
-      </div>
-    </div>
-    <div class="routing-note" style="padding:0 20px 12px; font-size:12px; color:var(--text-muted);"></div>
-  `;
-
-  row.appendChild(bubble);
-  messagesWrapper.appendChild(row);
-
-  return {
-    bubbleEl: bubble,
-    contentEl: bubble.querySelector('.assistant-content'),
-    badgeEl: bubble.querySelector('.routing-badge'),
-    routingNoteEl: bubble.querySelector('.routing-note')
-  };
-}
-
+// ── Markdown, Sanitization & Copyable Code Blocks ────────────────────────────
 function sanitizeMarkdown(text) {
   if (typeof marked !== 'undefined') {
     const raw = marked.parse(text);
@@ -274,44 +261,401 @@ function escapeHTML(str) {
   return p.innerHTML.replace(/\n/g, '<br>');
 }
 
+function enhanceCodeBlocks(container) {
+  const pres = container.querySelectorAll('pre');
+  pres.forEach((pre) => {
+    if (pre.parentElement && pre.parentElement.classList.contains('code-block-wrapper')) {
+      return;
+    }
+
+    const codeEl = pre.querySelector('code');
+    let lang = 'código';
+    if (codeEl && codeEl.className) {
+      const match = codeEl.className.match(/language-([a-zA-Z0-9_+-]+)/);
+      if (match) lang = match[1];
+    }
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'code-block-wrapper';
+
+    const header = document.createElement('div');
+    header.className = 'code-block-header';
+
+    const langLabel = document.createElement('span');
+    langLabel.textContent = lang;
+
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'copy-code-btn';
+    copyBtn.textContent = 'Copiar';
+    copyBtn.addEventListener('click', async () => {
+      const rawCode = codeEl ? codeEl.textContent : pre.textContent;
+      try {
+        await navigator.clipboard.writeText(rawCode || '');
+        copyBtn.textContent = 'Copiado';
+        copyBtn.classList.add('copied');
+        setTimeout(() => {
+          copyBtn.textContent = 'Copiar';
+          copyBtn.classList.remove('copied');
+        }, 1800);
+      } catch {
+        showDockNotice('No se pudo copiar al portapapeles.');
+      }
+    });
+
+    header.appendChild(langLabel);
+    header.appendChild(copyBtn);
+
+    pre.parentNode.insertBefore(wrapper, pre);
+    wrapper.appendChild(header);
+    wrapper.appendChild(pre);
+  });
+}
+
+// ── Chat Bubble Rendering ────────────────────────────────────────────────────
+function getProviderClass(providerName) {
+  const p = (providerName || '').toLowerCase();
+  if (p.includes('gemini') || p.includes('google')) return 'gemini';
+  if (p.includes('groq')) return 'groq';
+  if (p.includes('openrouter')) return 'openrouter';
+  return '';
+}
+
+function renderUserMessage(text, images = []) {
+  const row = document.createElement('div');
+  row.className = 'message-row user';
+
+  const bubble = document.createElement('div');
+  bubble.className = 'user-bubble';
+
+  if (images && images.length > 0) {
+    const imgsGrid = document.createElement('div');
+    imgsGrid.className = 'user-images-grid';
+    images.forEach((src, i) => {
+      const img = document.createElement('img');
+      img.src = src;
+      img.alt = `Adjunto ${i + 1}`;
+      img.className = 'user-image-thumb';
+      imgsGrid.appendChild(img);
+    });
+    bubble.appendChild(imgsGrid);
+  }
+
+  const textNode = document.createElement('div');
+  textNode.innerHTML = escapeHTML(text);
+  bubble.appendChild(textNode);
+
+  row.appendChild(bubble);
+  messagesWrapper.appendChild(row);
+}
+
+function createAssistantBubble({ initialProvider = 'Conectando...', initialLatency = null, isStatic = false } = {}) {
+  const row = document.createElement('div');
+  row.className = 'message-row';
+
+  const bubble = document.createElement('div');
+  bubble.className = 'assistant-bubble';
+
+  const header = document.createElement('div');
+  header.className = 'proof-of-routing';
+
+  const metaLeft = document.createElement('div');
+  metaLeft.className = 'routing-meta-left';
+
+  const providerEl = document.createElement('span');
+  providerEl.className = `routing-provider ${getProviderClass(initialProvider)}`;
+  providerEl.textContent = initialProvider;
+
+  const latencyEl = document.createElement('span');
+  latencyEl.className = 'routing-latency';
+  latencyEl.textContent = initialLatency !== null ? `· ${initialLatency} ms` : '';
+
+  metaLeft.appendChild(providerEl);
+  metaLeft.appendChild(latencyEl);
+
+  const labelEl = document.createElement('span');
+  labelEl.className = 'routing-label';
+  labelEl.textContent = 'Proof of Routing';
+
+  header.appendChild(metaLeft);
+  header.appendChild(labelEl);
+
+  const contentEl = document.createElement('div');
+  contentEl.className = 'assistant-content';
+  if (!isStatic) {
+    contentEl.innerHTML = `
+      <div class="skeleton-loader">
+        <div class="skeleton-line" style="width: 82%"></div>
+        <div class="skeleton-line" style="width: 64%"></div>
+        <div class="skeleton-line" style="width: 44%"></div>
+      </div>
+    `;
+  }
+
+  const routingNoteEl = document.createElement('div');
+  routingNoteEl.className = 'routing-note';
+
+  bubble.appendChild(header);
+  bubble.appendChild(contentEl);
+  bubble.appendChild(routingNoteEl);
+  row.appendChild(bubble);
+  messagesWrapper.appendChild(row);
+
+  return { bubbleEl: bubble, contentEl, providerEl, latencyEl, routingNoteEl };
+}
+
 function scrollToBottom() {
   requestAnimationFrame(() => {
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
   });
 }
 
-// ── Tarjetas de Inicio Rápido ────────────────────────────────────────────────
-document.querySelectorAll('.action-card').forEach(card => {
+// ── Streaming SSE Chat Handler ───────────────────────────────────────────────
+async function handleSend() {
+  const text = chatTextarea.value.trim();
+  if (!text || isStreaming) return;
+
+  isStreaming = true;
+  sendBtn.disabled = true;
+  welcomeHero.style.display = 'none';
+
+  if (activeSessionTitle.textContent === 'Nueva consulta') {
+    const shortTitle = text.length > 48 ? text.slice(0, 48) + '…' : text;
+    activeSessionTitle.textContent = shortTitle;
+  }
+
+  const sentImages = [...attachedImages];
+  renderUserMessage(text, sentImages);
+
+  chatTextarea.value = '';
+  chatTextarea.style.height = 'auto';
+  attachedImages = [];
+  renderImagePreviews();
+
+  const { contentEl, providerEl, latencyEl, routingNoteEl } = createAssistantBubble();
+  scrollToBottom();
+
+  try {
+    const response = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: text,
+        mode: modeSelector.value,
+        session_id: activeSessionId,
+        images: sentImages.length > 0 ? sentImages : null,
+      }),
+    });
+
+    if (!response.ok || !response.body) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let sseBuffer = '';
+    let accumulatedText = '';
+    let isFirstChunk = true;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      sseBuffer += decoder.decode(value, { stream: true });
+      const lines = sseBuffer.split('\n');
+      sseBuffer = lines.pop() ?? '';
+
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line.startsWith('data: ')) continue;
+
+        try {
+          const event = JSON.parse(line.slice(6));
+
+          if (event.type === 'connecting') {
+            providerEl.className = `routing-provider ${getProviderClass(event.provider)}`;
+            providerEl.textContent = `Conectando · ${event.provider}`;
+            latencyEl.textContent = '';
+          } else if (event.type === 'failover') {
+            providerEl.className = 'routing-provider failover';
+            providerEl.textContent = `Conmutando ➔ ${event.to_provider}`;
+            latencyEl.textContent = '';
+          } else if (event.type === 'chunk') {
+            if (isFirstChunk) {
+              contentEl.innerHTML = '';
+              isFirstChunk = false;
+            }
+            accumulatedText += event.text;
+            contentEl.innerHTML = sanitizeMarkdown(accumulatedText);
+            scrollToBottom();
+          } else if (event.type === 'done') {
+            providerEl.className = `routing-provider ${getProviderClass(event.provider)}`;
+            providerEl.textContent = event.provider;
+            latencyEl.textContent = `· ${event.latency_ms} ms`;
+            enhanceCodeBlocks(contentEl);
+
+            if (event.failover_note) {
+              routingNoteEl.innerHTML = sanitizeMarkdown(event.failover_note);
+            }
+          } else if (event.type === 'error') {
+            contentEl.innerHTML = `<div class="error-inline">${escapeHTML(event.message)}</div>`;
+          }
+        } catch {
+          // Ignorar fragmento malformado
+        }
+      }
+    }
+
+    await fetchSessions(sessionSearchInput.value);
+    fetchTelemetry();
+  } catch {
+    contentEl.innerHTML =
+      '<div class="error-inline">Error de conexión con el motor Nova. Verifica tu red o la disponibilidad del servidor.</div>';
+  }
+
+  isStreaming = false;
+  sendBtn.disabled = !chatTextarea.value.trim();
+  scrollToBottom();
+}
+
+// ── Quick Action Cards ───────────────────────────────────────────────────────
+document.querySelectorAll('.action-card').forEach((card) => {
   card.addEventListener('click', () => {
-    chatTextarea.value = card.dataset.prompt;
+    chatTextarea.value = card.dataset.prompt || '';
     chatTextarea.dispatchEvent(new Event('input'));
     handleSend();
   });
 });
 
-// ── Controles de Sidebar y Sesión ───────────────────────────────────────────
+// ── Session History (Backend-Connected + Live Search) ────────────────────────
 newChatBtn.addEventListener('click', () => {
-  const newSid = 'sess_' + Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
-  localStorage.setItem('nova_session_id', newSid);
+  const newSid = generateSessionId();
+  setActiveSession(newSid, 'Nueva consulta');
   messagesWrapper.innerHTML = '';
   messagesWrapper.appendChild(welcomeHero);
   welcomeHero.style.display = 'flex';
-  if (window.innerWidth <= 768) sidebar.classList.remove('open');
+  if (window.innerWidth <= 768) setSidebarOpen(false);
+  chatTextarea.focus();
 });
 
-menuToggleBtn.addEventListener('click', () => {
-  sidebar.classList.toggle('open');
+let searchDebounce = null;
+sessionSearchInput.addEventListener('input', () => {
+  clearTimeout(searchDebounce);
+  searchDebounce = setTimeout(() => {
+    fetchSessions(sessionSearchInput.value);
+  }, 150);
 });
 
-function updateHistorySidebar(text) {
-  const label = text.length > 28 ? text.slice(0, 28) + '…' : text;
-  const item = document.createElement('div');
-  item.className = 'history-item active';
-  item.textContent = label;
-  historyList.prepend(item);
+async function fetchSessions(query = '') {
+  try {
+    const qs = query.trim() ? `?q=${encodeURIComponent(query.trim())}` : '';
+    const res = await fetch(`/api/sessions${qs}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    sessionsCache = Array.isArray(data.sessions) ? data.sessions : [];
+    renderSessionList();
+  } catch {
+    // Silencioso en fallo transitorio
+  }
 }
 
-// ── Telemetría Polling ───────────────────────────────────────────────────────
+function renderSessionList() {
+  historyList.innerHTML = '';
+
+  if (sessionsCache.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'history-empty';
+    empty.textContent = sessionSearchInput.value.trim()
+      ? 'No se encontraron conversaciones que coincidan.'
+      : 'Tus conversaciones aparecerán aquí.';
+    historyList.appendChild(empty);
+    return;
+  }
+
+  sessionsCache.forEach((sess) => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = `history-item${sess.session_id === activeSessionId ? ' active' : ''}`;
+    item.setAttribute('role', 'listitem');
+
+    const title = document.createElement('span');
+    title.className = 'history-item-title';
+    title.textContent = sess.title;
+
+    const meta = document.createElement('span');
+    meta.className = 'history-item-meta';
+    const msgLabel = sess.message_count === 1 ? '1 turno' : `${sess.message_count} turnos`;
+    meta.textContent = `${sess.last_provider} · ${msgLabel}`;
+
+    item.appendChild(title);
+    item.appendChild(meta);
+    item.addEventListener('click', () => loadSessionHistory(sess));
+    historyList.appendChild(item);
+  });
+}
+
+async function loadSessionHistory(sess) {
+  if (isStreaming) return;
+  try {
+    const res = await fetch(`/api/history?session_id=${encodeURIComponent(sess.session_id)}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const entries = Array.isArray(data.history) ? data.history : [];
+
+    setActiveSession(sess.session_id, sess.title);
+    messagesWrapper.innerHTML = '';
+    messagesWrapper.appendChild(welcomeHero);
+
+    if (entries.length === 0) {
+      welcomeHero.style.display = 'flex';
+    } else {
+      welcomeHero.style.display = 'none';
+      entries.forEach((entry) => {
+        renderUserMessage(entry.message);
+        const { contentEl } = createAssistantBubble({
+          initialProvider: entry.provider || 'Nova',
+          initialLatency: entry.latency_ms ?? null,
+          isStatic: true,
+        });
+        contentEl.innerHTML = sanitizeMarkdown(entry.response || '');
+        enhanceCodeBlocks(contentEl);
+      });
+    }
+
+    if (window.innerWidth <= 768) setSidebarOpen(false);
+    scrollToBottom();
+  } catch {
+    showDockNotice('No se pudo cargar el historial de la sesión.');
+  }
+}
+
+// ── Health & Telemetry Polling ───────────────────────────────────────────────
+async function fetchHealth() {
+  try {
+    const res = await fetch('/api/health');
+    if (!res.ok) return;
+    const data = await res.json();
+    const cfg = data.providers_configured || {};
+
+    applyChannelState(statusGemini, healthGemini, Boolean(cfg.gemini));
+    applyChannelState(statusGroq, healthGroq, Boolean(cfg.groq));
+    applyChannelState(statusOpenRouter, healthOpenRouter, Boolean(cfg.openrouter));
+  } catch {
+    // Silencioso
+  }
+}
+
+function applyChannelState(topbarEl, drawerEl, isConfigured) {
+  if (topbarEl) {
+    topbarEl.classList.toggle('ready', isConfigured);
+    topbarEl.classList.toggle('unconfigured', !isConfigured);
+  }
+  if (drawerEl) {
+    drawerEl.textContent = isConfigured ? 'Disponible' : 'Sin clave';
+    drawerEl.className = `health-state ${isConfigured ? 'ok' : 'missing'}`;
+  }
+}
+
 async function fetchTelemetry() {
   try {
     const res = await fetch('/api/telemetry');
@@ -319,37 +663,59 @@ async function fetchTelemetry() {
     const data = await res.json();
 
     const stats = data.stats || {};
-    const total = (stats.gemini || 0) + (stats.groq || 0) + (stats.openrouter || 0) || 1;
+    const avgLat = data.avg_latencies_ms || {};
+    const sumProviders = (stats.gemini || 0) + (stats.groq || 0) + (stats.openrouter || 0);
 
-    const pGemini = Math.round(((stats.gemini || 0) / total) * 100);
-    const pGroq = Math.round(((stats.groq || 0) / total) * 100);
-    const pRouter = Math.max(0, 100 - pGemini - pGroq);
+    if (sumProviders > 0) {
+      const pGemini = Math.round(((stats.gemini || 0) / sumProviders) * 100);
+      const pGroq = Math.round(((stats.groq || 0) / sumProviders) * 100);
+      const pRouter = Math.max(0, 100 - pGemini - pGroq);
 
-    barGemini.style.width = pGemini + '%';
-    barGroq.style.width = pGroq + '%';
-    barRouter.style.width = pRouter + '%';
+      barGemini.style.width = pGemini + '%';
+      barGroq.style.width = pGroq + '%';
+      barRouter.style.width = pRouter + '%';
 
-    txtGemini.textContent = `Gemini ${pGemini}%`;
-    txtGroq.textContent = `Groq ${pGroq}%`;
-    txtRouter.textContent = `Router ${pRouter}%`;
+      txtGemini.textContent = `Gemini ${pGemini}%`;
+      txtGroq.textContent = `Groq ${pGroq}%`;
+      txtRouter.textContent = `Router ${pRouter}%`;
+    } else {
+      barGemini.style.width = '0%';
+      barGroq.style.width = '0%';
+      barRouter.style.width = '0%';
+      txtGemini.textContent = 'Gemini 0%';
+      txtGroq.textContent = 'Groq 0%';
+      txtRouter.textContent = 'Router 0%';
+    }
 
     metricRequests.textContent = stats.total_requests || 0;
     metricFailovers.textContent = stats.total_failovers || 0;
+    metricLatGemini.textContent = `${avgLat.gemini || 0} ms`;
+    metricLatGroq.textContent = `${avgLat.groq || 0} ms`;
 
-    // Renderizar eventos
     const events = data.recent_events || [];
-    if (events.length > 0) {
-      eventFeed.innerHTML = events.slice(-6).reverse().map(ev => `
-        <div class="event-row ${ev.type === 'failover' ? 'failover' : ''}">
-          <span style="color:var(--text-muted)">${ev.timestamp}</span> ${escapeHTML(ev.detail)}
-        </div>
-      `).join('');
+    if (events.length === 0) {
+      eventFeed.innerHTML = '<div class="event-empty">Sin eventos registrados aún.</div>';
+    } else {
+      eventFeed.innerHTML = events
+        .slice(-10)
+        .reverse()
+        .map(
+          (ev) => `
+          <div class="event-row ${ev.type === 'failover' ? 'failover' : ''}">
+            <span class="event-time">${escapeHTML(ev.timestamp)}</span>${escapeHTML(ev.detail)}
+          </div>
+        `
+        )
+        .join('');
     }
-  } catch (e) {
-    // Silencioso si falla
+  } catch {
+    // Silencioso
   }
 }
 
-// Iniciar polling de telemetría cada 8 segundos
+// ── Boot Initialization ──────────────────────────────────────────────────────
+syncFlowNodesSelection();
+fetchHealth();
+fetchSessions();
 fetchTelemetry();
 setInterval(fetchTelemetry, 8000);

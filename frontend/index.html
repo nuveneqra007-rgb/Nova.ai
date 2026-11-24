@@ -2,65 +2,106 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <meta name="description" content="Nova AI — Multi-Provider Intelligence Platform with Real-Time Routing">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Nova AI — Plataforma de inteligencia multi-proveedor con enrutamiento resiliente en tiempo real.">
   <title>Nova AI — Multi-Provider Intelligence Engine</title>
 
-  <!-- Google Fonts: Inter & JetBrains Mono -->
+  <!-- Google Fonts: Plus Jakarta Sans & JetBrains Mono -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 
   <link rel="stylesheet" href="/css/styles.css">
 </head>
 <body>
 
   <div class="app-shell">
+    <div class="drawer-backdrop" id="drawer-backdrop" aria-hidden="true"></div>
 
-    <!-- ── Sidebar Izquierdo ──────────────────────────────────────────────── -->
-    <aside class="sidebar" id="sidebar" aria-label="Navegación e Historial">
+    <!-- ── Sidebar Izquierdo (Historial Real + Búsqueda) ──────────────────── -->
+    <aside class="sidebar" id="sidebar" aria-label="Navegación e historial de conversaciones">
       <div class="sidebar-header">
-        <div class="brand-badge">
-          <div class="brand-icon">✦</div>
-          <span>Nova AI</span>
+        <a href="/" class="brand-lockup" aria-label="Nova AI inicio">
+          <svg class="brand-mark" width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <rect x="2" y="2" width="20" height="20" rx="5" stroke="currentColor" stroke-width="1.75"/>
+            <path d="M12 6.5L13.6 10.4L17.5 12L13.6 13.6L12 17.5L10.4 13.6L6.5 12L10.4 10.4L12 6.5Z" fill="currentColor"/>
+          </svg>
+          <span class="brand-name">Nova AI</span>
+        </a>
+        <button class="icon-btn mobile-only" id="sidebar-close-btn" type="button" aria-label="Cerrar barra lateral">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+
+      <div class="sidebar-actions">
+        <button class="new-chat-btn" id="new-chat-btn" type="button">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <line x1="12" y1="5" x2="12" y2="19"/>
+            <line x1="5" y1="12" x2="19" y2="12"/>
+          </svg>
+          <span>Nueva consulta</span>
+        </button>
+
+        <div class="session-search-wrap">
+          <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="7"/>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+          <input
+            type="search"
+            class="session-search-input"
+            id="session-search"
+            placeholder="Buscar sesiones..."
+            aria-label="Buscar conversaciones"
+            autocomplete="off"
+          >
+          <kbd class="kbd-hint" aria-hidden="true">⌘K</kbd>
         </div>
       </div>
 
-      <button class="new-chat-btn" id="new-chat-btn">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        Nueva consulta
-      </button>
-
       <div class="sidebar-content">
-        <div class="history-section-title">Historial Reciente</div>
-        <div class="history-list" id="history-list"></div>
+        <div class="history-section-title">Historial de sesiones</div>
+        <div class="history-list" id="history-list" role="list"></div>
       </div>
 
       <div class="sidebar-footer">
-        <span>v2.0 Multi-Router</span>
-        <span>Alexander L. 🇩🇴</span>
+        <span>Nova AI</span>
+        <span>Multi-Router</span>
       </div>
     </aside>
 
     <!-- ── Viewport Central (Chat) ────────────────────────────────────────── -->
     <main class="chat-viewport">
-      <!-- Topbar -->
+      <!-- Topbar limpia en una sola línea -->
       <header class="chat-topbar">
-        <div class="topbar-left">
-          <button class="menu-toggle-btn" id="menu-toggle-btn" aria-label="Abrir menú">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+        <div class="topbar-zone-left">
+          <button class="icon-btn mobile-only" id="menu-toggle-btn" type="button" aria-label="Abrir historial">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
           </button>
-          <div class="network-status-bar" role="status" aria-live="polite">
-            <div class="status-pill" id="pill-gemini" title="Canal Principal de Razonamiento">
-              <span class="status-dot gemini"></span> Gemini
-            </div>
-            <div class="status-pill" id="pill-groq" title="Canal Auxiliar de Ultra Baja Latencia">
-              <span class="status-dot groq"></span> Groq
-            </div>
-            <div class="status-pill" id="pill-router" title="Línea de Defensa y Código">
-              <span class="status-dot router"></span> OpenRouter
-            </div>
-          </div>
+          <span class="active-session-title" id="active-session-title">Nueva consulta</span>
+        </div>
+
+        <div class="topbar-zone-center" id="channel-readiness" aria-live="polite">
+          <span class="channel-text" id="status-gemini">Gemini</span>
+          <span class="meta-sep" aria-hidden="true">·</span>
+          <span class="channel-text" id="status-groq">Groq</span>
+          <span class="meta-sep" aria-hidden="true">·</span>
+          <span class="channel-text" id="status-openrouter">OpenRouter</span>
+        </div>
+
+        <div class="topbar-zone-right">
+          <button
+            class="telemetry-toggle-btn"
+            id="telemetry-toggle-btn"
+            type="button"
+            aria-expanded="false"
+            aria-controls="telemetry-drawer"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+            </svg>
+            <span>Telemetría</span>
+          </button>
         </div>
       </header>
 
@@ -68,120 +109,177 @@
       <div class="messages-container" id="messages-container">
         <div class="messages-wrapper" id="messages-wrapper">
 
-          <!-- Welcome Hero & Router Diagram -->
-          <div class="welcome-hero" id="welcome-hero">
-            <h1 class="welcome-title">Multi-Provider Intelligence</h1>
+          <!-- Welcome Hero & Flujo de Enrutamiento -->
+          <section class="welcome-hero" id="welcome-hero" aria-label="Introducción a Nova AI">
+            <p class="hero-eyebrow">Orquestación multi-proveedor</p>
+            <h1 class="welcome-title">Inteligencia resiliente con conmutación en tiempo real</h1>
             <p class="welcome-subtitle">
-              Orquestación resiliente de modelos en tiempo real. Si un canal satura o devuelve 429, Nova conmuta automáticamente sin detener la respuesta.
+              Enrutamiento adaptativo entre Google Gemini, Groq y OpenRouter. Si un canal alcanza su límite o falla, Nova conmuta automáticamente sin interrumpir la respuesta.
             </p>
 
-            <!-- Diagrama visual de enrutamiento -->
-            <div class="router-diagram">
-              <div class="node-chip node-gemini">1. Gemini Flash</div>
-              <span style="color:var(--text-muted); font-size:12px">➔</span>
-              <div class="node-chip node-groq">2. Groq Llama 3</div>
-              <span style="color:var(--text-muted); font-size:12px">➔</span>
-              <div class="node-chip node-router">3. OpenRouter Free</div>
+            <!-- Flujo interactivo de prioridad por canal -->
+            <div class="router-flow" role="group" aria-label="Priorizar canal de enrutamiento">
+              <button class="flow-node" type="button" data-mode="reasoning">
+                <span class="flow-index">01.</span>
+                <span class="flow-name">Gemini</span>
+                <span class="flow-role">Razonamiento</span>
+              </button>
+              <span class="flow-arrow" aria-hidden="true">→</span>
+              <button class="flow-node" type="button" data-mode="speed">
+                <span class="flow-index">02.</span>
+                <span class="flow-name">Groq</span>
+                <span class="flow-role">Baja latencia</span>
+              </button>
+              <span class="flow-arrow" aria-hidden="true">→</span>
+              <button class="flow-node" type="button" data-mode="code">
+                <span class="flow-index">03.</span>
+                <span class="flow-name">OpenRouter</span>
+                <span class="flow-role">Código y respaldo</span>
+              </button>
             </div>
 
             <!-- Tarjetas de Acceso Rápido -->
             <div class="cards-grid">
-              <button class="action-card" data-prompt="Analiza las implicaciones de seguridad y arquitectura de un sistema multi-proveedor LLM con failover automático.">
-                <strong>🔬 Razonamiento Profundo</strong>
-                <span>Prioriza Google Gemini Flash</span>
+              <button class="action-card" type="button" data-prompt="Analiza las implicaciones de seguridad y arquitectura de un sistema multi-proveedor LLM con failover automático.">
+                <strong class="action-card-title">Arquitectura multi-proveedor</strong>
+                <span class="action-card-desc">Evalúa seguridad y resiliencia con failover automático</span>
               </button>
-              <button class="action-card" data-prompt="Explica en 3 viñetas ultraconcisas qué es Server-Sent Events (SSE) y su ventaja sobre WebSockets.">
-                <strong>⚡ Respuesta Instantánea</strong>
-                <span>Prioriza Groq (~100ms)</span>
+              <button class="action-card" type="button" data-prompt="Explica en 3 viñetas ultraconcisas qué es Server-Sent Events (SSE) y su ventaja sobre WebSockets.">
+                <strong class="action-card-title">Streaming SSE vs WebSockets</strong>
+                <span class="action-card-desc">Síntesis técnica directa en tres puntos clave</span>
               </button>
-              <button class="action-card" data-prompt="Escribe un middleware en FastAPI para sanitizar entradas y prevenir DoS con Pydantic v2.">
-                <strong>💻 Generador de Código</strong>
-                <span>Prioriza OpenRouter Code Engine</span>
+              <button class="action-card" type="button" data-prompt="Escribe un middleware en Express con TypeScript para sanitizar entradas y prevenir DoS por payload excesivo.">
+                <strong class="action-card-title">Middleware de sanitización</strong>
+                <span class="action-card-desc">Código completo y ejecutable con pruebas de verificación</span>
               </button>
-              <button class="action-card" data-prompt="Dame una síntesis ejecutiva sobre cómo mitigar ataques de Prompt Injection en producción.">
-                <strong>🛡️ Arquitectura y AppSec</strong>
-                <span>Enrutamiento Inteligente</span>
+              <button class="action-card" type="button" data-prompt="Dame una síntesis ejecutiva sobre cómo mitigar ataques de Prompt Injection en producción.">
+                <strong class="action-card-title">Mitigación de Prompt Injection</strong>
+                <span class="action-card-desc">Controles prácticos para aplicaciones en producción</span>
               </button>
             </div>
-          </div>
+          </section>
 
         </div>
       </div>
 
       <!-- Input Dock Multimodal -->
       <footer class="input-dock">
+        <div class="dock-notice" id="dock-notice" role="status" aria-live="polite" hidden></div>
+
         <div class="input-container">
+          <div class="image-previews" id="image-previews" hidden></div>
+
           <div class="input-row">
-            <input type="file" id="file-input" accept="image/*" multiple style="display:none">
-            <button class="btn-icon" id="attach-btn" title="Adjuntar imagen (máx 3)">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+            <input type="file" id="file-input" accept="image/*" multiple hidden>
+            <button class="icon-btn" id="attach-btn" type="button" title="Adjuntar imagen (máx. 3)" aria-label="Adjuntar imagen">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+              </svg>
             </button>
 
-            <select class="mode-selector" id="mode-selector" title="Seleccionar modo de enrutamiento">
-              <option value="auto">⚡ Auto Router</option>
-              <option value="reasoning">✦ Razonamiento (Gemini)</option>
-              <option value="speed">🏎️ Velocidad (Groq)</option>
-              <option value="code">💻 Código (OpenRouter)</option>
+            <label class="sr-only" for="mode-selector">Modo de enrutamiento</label>
+            <select class="mode-selector" id="mode-selector" title="Modo de enrutamiento">
+              <option value="auto">Auto Router</option>
+              <option value="reasoning">Razonamiento · Gemini</option>
+              <option value="speed">Velocidad · Groq</option>
+              <option value="code">Código · OpenRouter</option>
             </select>
 
-            <textarea class="chat-textarea" id="chat-textarea" placeholder="Escribe tu instrucción técnica..." rows="1" maxlength="4000"></textarea>
+            <label class="sr-only" for="chat-textarea">Instrucción</label>
+            <textarea
+              class="chat-textarea"
+              id="chat-textarea"
+              placeholder="Escribe tu consulta técnica..."
+              rows="1"
+              maxlength="4000"
+            ></textarea>
 
-            <button class="send-btn" id="send-btn" disabled>
+            <button class="send-btn" id="send-btn" type="button" disabled>
               <span>Enviar</span>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9"/></svg>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="12" y1="19" x2="12" y2="5"/>
+                <polyline points="5 12 12 5 19 12"/>
+              </svg>
             </button>
           </div>
-
-          <!-- Thumbnails de imágenes adjuntas -->
-          <div id="image-previews" style="display:flex; gap:8px; margin-top:8px;"></div>
         </div>
       </footer>
     </main>
 
-    <!-- ── Panel Derecho (Telemetría Permanente) ──────────────────────────── -->
-    <aside class="telemetry-sidebar" aria-label="Telemetría de Red">
+    <!-- ── Drawer Derecho Colapsable (Telemetría de Red) ───────────────────── -->
+    <aside class="telemetry-drawer" id="telemetry-drawer" aria-label="Panel de telemetría de red" aria-hidden="true">
       <div class="telemetry-header">
-        <span>📊 Red y Telemetría</span>
+        <span class="telemetry-title">Telemetría de red</span>
+        <button class="icon-btn" id="telemetry-close-btn" type="button" aria-label="Cerrar panel de telemetría">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
       </div>
 
       <div class="telemetry-content">
-        <!-- Distribución de Tráfico -->
-        <div class="metric-block">
-          <div class="metric-title">Distribución de Enrutamiento</div>
-          <div class="dist-bar">
-            <div class="dist-seg gemini" id="bar-gemini" style="width: 60%"></div>
-            <div class="dist-seg groq" id="bar-groq" style="width: 30%"></div>
-            <div class="dist-seg router" id="bar-router" style="width: 10%"></div>
+        <!-- Estado real de proveedores -->
+        <section class="telemetry-section">
+          <h2 class="metric-title">Canales configurados</h2>
+          <div class="provider-health-list" id="provider-health-list">
+            <div class="health-row">
+              <span class="health-name">Google Gemini</span>
+              <span class="health-state" id="health-gemini">Verificando</span>
+            </div>
+            <div class="health-row">
+              <span class="health-name">Groq Inference</span>
+              <span class="health-state" id="health-groq">Verificando</span>
+            </div>
+            <div class="health-row">
+              <span class="health-name">OpenRouter</span>
+              <span class="health-state" id="health-openrouter">Verificando</span>
+            </div>
           </div>
-          <div style="display:flex; justify-content:space-between; font-size:0.72rem; color:var(--text-muted); font-family:var(--font-mono);">
-            <span style="color:var(--accent-gemini)" id="txt-gemini">Gemini 0%</span>
-            <span style="color:var(--accent-groq)" id="txt-groq">Groq 0%</span>
-            <span style="color:var(--accent-router)" id="txt-router">Router 0%</span>
-          </div>
-        </div>
+        </section>
 
-        <!-- Métricas Rápidas -->
-        <div class="metric-block">
-          <div class="metric-title">Métricas Globales</div>
-          <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; font-family:var(--font-mono); font-size:0.8rem;">
-            <div>
-              <div style="font-size:0.68rem; color:var(--text-muted);">Total Solicitudes</div>
-              <strong id="metric-requests">0</strong>
+        <!-- Distribución de Tráfico -->
+        <section class="telemetry-section">
+          <h2 class="metric-title">Distribución de enrutamiento</h2>
+          <div class="dist-bar" aria-hidden="true">
+            <div class="dist-seg gemini" id="bar-gemini"></div>
+            <div class="dist-seg groq" id="bar-groq"></div>
+            <div class="dist-seg router" id="bar-router"></div>
+          </div>
+          <div class="dist-legend">
+            <span class="legend-item gemini" id="txt-gemini">Gemini 0%</span>
+            <span class="legend-item groq" id="txt-groq">Groq 0%</span>
+            <span class="legend-item router" id="txt-router">Router 0%</span>
+          </div>
+        </section>
+
+        <!-- Métricas Globales y Latencia -->
+        <section class="telemetry-section">
+          <h2 class="metric-title">Métricas de ejecución</h2>
+          <div class="metrics-grid">
+            <div class="metric-cell">
+              <span class="metric-label">Solicitudes</span>
+              <strong class="metric-value" id="metric-requests">0</strong>
             </div>
-            <div>
-              <div style="font-size:0.68rem; color:var(--text-muted);">Failovers Auto</div>
-              <strong style="color:var(--status-warn);" id="metric-failovers">0</strong>
+            <div class="metric-cell">
+              <span class="metric-label">Failovers auto</span>
+              <strong class="metric-value warn" id="metric-failovers">0</strong>
+            </div>
+            <div class="metric-cell">
+              <span class="metric-label">Media Gemini</span>
+              <strong class="metric-value" id="metric-lat-gemini">0 ms</strong>
+            </div>
+            <div class="metric-cell">
+              <span class="metric-label">Media Groq</span>
+              <strong class="metric-value" id="metric-lat-groq">0 ms</strong>
             </div>
           </div>
-        </div>
+        </section>
 
         <!-- Registro de Eventos en Vivo -->
-        <div class="metric-block" style="flex:1; display:flex; flex-direction:column;">
-          <div class="metric-title">Log de Conmutaciones</div>
+        <section class="telemetry-section telemetry-events-section">
+          <h2 class="metric-title">Registro de conmutaciones</h2>
           <div class="event-feed" id="event-feed">
-            <div class="event-row">Sistema inicializado · Esperando consulta...</div>
+            <div class="event-empty">Sin eventos registrados aún.</div>
           </div>
-        </div>
+        </section>
       </div>
     </aside>
 

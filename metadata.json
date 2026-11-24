@@ -1,0 +1,8 @@
+{
+  "name": "Nova AI",
+  "description": "Nova AI — Multi-Provider Intelligence Platform with Real-Time Routing",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
