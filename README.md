@@ -2,17 +2,18 @@
 
 > **Motor de inteligencia artificial resiliente con enrutamiento dinámico en tiempo real y conmutación por error (failover) transparente.**
 
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688.svg?style=flat&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
-[![Python](https://img.shields.io/badge/Python-3.12-3776AB.svg?style=flat&logo=python&logoColor=white)](https://www.python.org)
+[![Express](https://img.shields.io/badge/Express-5.3-000000.svg?style=flat&logo=express&logoColor=white)](https://expressjs.com)
+[![TypeScript](https://img.shields.io/badge/TypeScript-7.0-3178C6.svg?style=flat&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
+[![Node.js](https://img.shields.io/badge/Node.js-22+-339933.svg?style=flat&logo=node.js&logoColor=white)](https://nodejs.org)
 [![Vercel](https://img.shields.io/badge/Deploy-Vercel%20Serverless-000000.svg?style=flat&logo=vercel&logoColor=white)](https://vercel.com)
-[![Supabase](https://img.shields.io/badge/Database-PostgreSQL%2015-3ECF8E.svg?style=flat&logo=supabase&logoColor=white)](https://supabase.com)
+[![Supabase](https://img.shields.io/badge/Persistencia-Supabase%20(opcional)-3ECF8E.svg?style=flat&logo=supabase&logoColor=white)](https://supabase.com)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ---
 
 ## 🎯 Visión General
 
-A diferencia de los wrappers convencionales de IA atados a un único proveedor o modelo, **Nova AI v2** implementa una arquitectura distribuida de **enrutamiento inteligente multi-proveedor**. 
+A diferencia de los wrappers convencionales de IA atados a un único proveedor o modelo, **Nova AI v2** implementa una arquitectura distribuida de **enrutamiento inteligente multi-proveedor**.
 
 El sistema monitorea la disponibilidad de los canales en tiempo real y ejecuta **conmutaciones automáticas (*failover*) sin interrumpir la experiencia de usuario** en caso de límites de cuota (HTTP 429), fallos de servicio (5xx) o degradación de latencia.
 
@@ -30,7 +31,7 @@ El sistema monitorea la disponibilidad de los canales en tiempo real y ejecuta *
          ▼                       ▼                       ▼
 ┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐
 │ Google AI Studio │ ─⚡─►│  Groq Inference  │ ─⚡─►│    OpenRouter    │
-│  (Gemini Flash)  │    │ (Llama 3/Vision) │    │  (Code / Free)   │
+│  (Gemini 3/2.5)  │    │ (GPT-OSS / Qwen) │    │  (Free / Auto)   │
 └──────────────────┘    └──────────────────┘    └──────────────────┘
 ```
 
@@ -38,24 +39,52 @@ El sistema monitorea la disponibilidad de los canales en tiempo real y ejecuta *
 
 ## ⚡ Política de Enrutamiento y Resiliencia
 
-1. **Canal Principal (Razonamiento y Contexto Extenso):**
-   * **Google AI Studio (Gemini 1.5 Flash):** Diseñado para análisis complejo, síntesis conceptual y redacción estructurada.
-2. **Canal Auxiliar (Ultra-Baja Latencia y Diálogo Rápido):**
-   * **Groq LPU (`llama-3.3-70b-versatile`):** Respuestas instantáneas en menos de 150ms.
-3. **Canal Especializado en Visión (Multimodal):**
-   * **Groq Vision (`llama-3.2-11b-vision-preview`):** Procesamiento de hasta 3 imágenes simultáneas (límite de 20MB) con respaldo en OpenRouter Vision.
-4. **Línea de Defensa y Generación de Código:**
-   * **OpenRouter (`qwen-2.5-coder` / `openrouter/free`):** Modelos especializados en desarrollo de software con bloques de prueba ejecutables obligatorios (`// CÓMO PROBARLO`).
+### Canal Principal — Google AI Studio (Razonamiento complejo)
+Cadena de modelos con cascada automática:
+1. `gemini-3-flash-preview` — modelo Flash de nueva generación
+2. `gemini-2.5-flash` / `gemini-2.5-flash-lite` — estables y confiables
+3. `gemini-2.5-pro` — máximo razonamiento (cuotas más estrictas)
+4. `gemini-2.0-flash` / `gemini-1.5-flash` / `gemini-1.5-pro` — respaldo
+
+> Se utiliza la API REST v1beta directamente con streaming SSE (`alt=sse`), sin depender del SDK oficial de Google, para garantizar compatibilidad con modelos recientes.
+
+### Canal Auxiliar — Groq (Diálogo rápido, ultra-baja latencia)
+- **Texto:** `openai/gpt-oss-120b` → `llama-3.1-8b-instant` → `llama-3.3-70b-versatile`
+- **Visión:** `qwen/qwen3.8-27b` → `llama-3.2-11b-vision-preview` → `llama-3.2-90b-vision-preview`
+
+### Línea de Defensa — OpenRouter (Código y respaldo)
+- **Descubrimiento dinámico** de modelos gratuitos mediante `/api/v1/models` con caché de 15 minutos.
+- Fallback a `openrouter/free` y `openrouter/auto` si no se encuentran modelos específicos.
 
 ---
 
 ## 🛠️ Stack Tecnológico
 
-* **Backend:** FastAPI (Python 3.12) asíncrono con streaming SSE (*Server-Sent Events*).
-* **Persistencia:** PostgreSQL en Supabase con particionamiento por sesión (`session_id`) y auditoría de telemetría.
-* **Frontend:** Vanilla HTML5, CSS3 moderno (OLED Deep Space, contraste WCAG 2.1 AA) y JavaScript modular sin sobrecarga de dependencias.
-* **Seguridad & Sanitización:** Validación estricta Pydantic v2, mitigación XSS con DOMPurify, SRI Hashes en CDNs y políticas CSP estrictas.
-* **Despliegue:** Arquitectura Serverless unificada en Vercel (`@vercel/python` + `@vercel/static`).
+| Capa | Tecnología |
+|---|---|
+| **Runtime** | Node.js 22+ con ESM nativo |
+| **Backend** | Express 5.3 (TypeScript 7) con streaming SSE |
+| **Lenguaje** | TypeScript estricto (`tsc --noEmit`) |
+| **Frontend** | Vanilla HTML5, CSS3 moderno (tema OLED oscuro), JavaScript ES2022 sin frameworks |
+| **IA — Gemini** | API REST directa a `v1beta` con SSE (sin SDK) |
+| **IA — Groq** | SDK oficial `groq-sdk` v1.6 |
+| **IA — OpenRouter** | API REST con descubrimiento dinámico de modelos |
+| **Persistencia** | Supabase (PostgreSQL) vía REST — opcional, con fallback a memoria |
+| **Despliegue** | Vercel Serverless (`api/index.ts` como entry point) |
+| **Tipografía** | Plus Jakarta Sans + JetBrains Mono (Google Fonts) |
+
+---
+
+## ✨ Características
+
+- **Interfaz minimalista** con bienvenida animada (*typewriter effect*) y vista completamente limpia sin distracciones.
+- **Chat multi-sesión aislado por usuario** — cada visitante obtiene su propio historial con ID persistente en `localStorage`.
+- **Eliminación permanente de chats** — sistema de *tombstones* en cliente que impide la reaparición de conversaciones eliminadas, incluso entre instancias serverless.
+- **Soporte multimodal** — adjunta hasta 3 imágenes por mensaje con análisis visual automático.
+- **Selector de modo de enrutamiento** — `Auto Router`, `Razonamiento`, `Velocidad` o `Código`.
+- **Panel de telemetría en tiempo real** — distribución de uso por proveedor, latencias promedio, registro de conmutaciones y estado de cada canal.
+- **Búsqueda en vivo** del historial de sesiones.
+- **Responsivo** — diseño adaptativo para escritorio y móvil.
 
 ---
 
@@ -70,25 +99,54 @@ cd Nova.ai
 ### 2. Configurar variables de entorno
 ```bash
 cp .env.example .env
-# Edita .env con tus claves de Google AI Studio, Groq, OpenRouter y Supabase
+# Edita .env con tus claves:
+#   GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY
+#   SUPABASE_URL, SUPABASE_KEY (opcional)
 ```
 
 ### 3. Instalar dependencias
 ```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+npm install
 ```
 
 ### 4. Ejecutar servidor de desarrollo
 ```bash
-uvicorn main:app --reload --port 8000
+npm run dev
 ```
-Abre tu navegador en `http://localhost:8000`.
+Abre tu navegador en `http://localhost:3000`.
+
+### 5. Build de producción
+```bash
+npm run build
+```
 
 ---
 
-## 📊 Telemetría y "Proof of Routing"
+## 📁 Estructura del Proyecto
+
+```
+Nova.ai/
+├── api/
+│   └── index.ts           # Entry point serverless (Vercel)
+├── frontend/
+│   ├── css/styles.css      # Sistema de diseño Obsidian Precision
+│   ├── js/app.js           # Controlador del cliente (~950 líneas)
+│   ├── index.html          # HTML principal
+│   ├── favicon.svg         # Ícono vectorial Nova AI
+│   └── favicon.png         # Ícono rasterizado
+├── src/
+│   ├── router.ts           # Motor multi-proveedor (Gemini REST, Groq SDK, OpenRouter)
+│   ├── memory.ts           # Almacenamiento de sesiones con aislamiento por usuario
+│   └── telemetry.ts        # Rastreador de métricas
+├── server.ts               # Servidor Express con API router
+├── vercel.json             # Configuración de despliegue
+├── tsconfig.json
+└── package.json
+```
+
+---
+
+## 📊 Telemetría y «Proof of Routing»
 
 Cada mensaje generado por Nova incluye un meta-badge transparente para auditoría técnica:
 * Proveedor activo en la respuesta (`Gemini`, `Groq`, `OpenRouter`).
@@ -98,7 +156,17 @@ Cada mensaje generado por Nova incluye un meta-badge transparente para auditorí
 
 ---
 
+## 🔐 Seguridad
+
+- API keys exclusivamente en el servidor (variables de entorno), nunca en el cliente.
+- Validación y sanitización de todo input del usuario.
+- Headers de seguridad configurados en `vercel.json` (`X-Content-Type-Options`, `X-Frame-Options`).
+- CORS configurado con whitelist.
+- Límite de payload de 64 MB en Express.
+
+---
+
 ## 👨‍💻 Autor
 
-Desarrollado por **Alexander López** ([@nuveneqra007-rgb](https://github.com/nuveneqra007-rgb))  
+Desarrollado por **Alexander López** ([@nuveneqra007-rgb](https://github.com/nuveneqra007-rgb))
 *Full-Stack Developer & Cyber Security Enthusiast · República Dominicana* 🇩🇴

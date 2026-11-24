@@ -423,6 +423,26 @@ html, body {
   flex: 1;
 }
 
+.topbar-logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.topbar-logo svg {
+  display: block;
+}
+
+.topbar-logo-border {
+  stroke: var(--border-strong);
+  transition: stroke 0.2s var(--ease-out);
+}
+
+.topbar-logo:hover .topbar-logo-border {
+  stroke: #c084fc;
+}
+
 .active-session-title {
   font-size: 0.86rem;
   font-weight: 500;
