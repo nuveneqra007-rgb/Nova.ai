@@ -46,9 +46,10 @@ app.use(
 
 app.use(express.json({ limit: '64mb' }));
 
-// ── API Endpoints ─────────────────────────────────────────────────────────────
+// ── API Router ────────────────────────────────────────────────────────────────
+const apiRouter = express.Router();
 
-app.get('/api/health', (_req, res) => {
+apiRouter.get('/health', (_req, res) => {
   res.json({
     status: 'online',
     engine: 'Nova Multi-Provider Router v2',
@@ -60,17 +61,17 @@ app.get('/api/health', (_req, res) => {
   });
 });
 
-app.get('/api/telemetry', (_req, res) => {
+apiRouter.get('/telemetry', (_req, res) => {
   res.json(telemetry.getSummary());
 });
 
-app.get('/api/sessions', async (req, res) => {
+apiRouter.get('/sessions', async (req, res) => {
   const query = typeof req.query.q === 'string' ? req.query.q : '';
   const sessions = await getSessions(query);
   res.json({ sessions });
 });
 
-app.get('/api/history', async (req, res) => {
+apiRouter.get('/history', async (req, res) => {
   const sessionId = typeof req.query.session_id === 'string' ? req.query.session_id.trim() : '';
   if (!sessionId) {
     res.status(400).json({ detail: 'session_id es requerido' });
@@ -80,7 +81,7 @@ app.get('/api/history', async (req, res) => {
   res.json({ history });
 });
 
-app.post('/api/chat', async (req, res) => {
+apiRouter.post('/chat', async (req, res) => {
   const body = req.body as {
     message?: unknown;
     mode?: unknown;
@@ -155,11 +156,19 @@ app.post('/api/chat', async (req, res) => {
   }
 });
 
+// Registrar el enrutador tanto en /api como en / para soportar reescrituras de Vercel y llamadas locales
+app.use('/api', apiRouter);
+app.use('/', apiRouter);
+
 // ── Static Frontend ───────────────────────────────────────────────────────────
 
 const frontendDir = path.join(__dirname, 'frontend');
+const publicDir = path.join(__dirname, 'public');
+
 app.use('/css', express.static(path.join(frontendDir, 'css')));
 app.use('/js', express.static(path.join(frontendDir, 'js')));
+app.use(express.static(frontendDir));
+app.use(express.static(publicDir));
 
 app.get('/', (_req, res) => {
   res.sendFile(path.join(frontendDir, 'index.html'));
@@ -167,6 +176,10 @@ app.get('/', (_req, res) => {
 
 initDb();
 
-app.listen(PORT, HOST, () => {
-  console.log(`Nova AI Engine listening on http://${HOST}:${PORT}`);
-});
+if (!process.env.VERCEL) {
+  app.listen(PORT, HOST, () => {
+    console.log(`Nova AI Engine listening on http://${HOST}:${PORT}`);
+  });
+}
+
+export default app;

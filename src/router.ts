@@ -34,6 +34,8 @@ function parseDataUrl(dataUrl: string): { mimeType: string; data: string } | nul
   return { mimeType: match[1], data: match[2] };
 }
 
+// ── Google AI Studio ──────────────────────────────────────────────────────────
+
 async function* callGemini(
   prompt: string,
   history: HistoryEntry[] = [],
@@ -54,8 +56,18 @@ async function* callGemini(
   });
 
   const configuredModel = (process.env.GEMINI_MODEL || '').trim();
+  // Modelos ordenados según especificación: gemini-3-flash-preview > gemini-2.5-flash / lite / pro
   const candidateModels = Array.from(
-    new Set([configuredModel, 'gemini-4-hydrogen', 'gemini-3.1-flash-lite'].filter(Boolean))
+    new Set(
+      [
+        configuredModel,
+        'gemini-3-flash-preview',
+        'gemini-2.5-flash',
+        'gemini-2.5-flash-lite',
+        'gemini-2.5-pro',
+        'gemini-2.0-flash',
+      ].filter(Boolean)
+    )
   );
 
   const contents: Array<{
@@ -106,16 +118,16 @@ async function* callGemini(
       }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      lastError = errMsg;
-      if (errMsg.includes('404') || errMsg.toLowerCase().includes('not found')) {
-        continue;
-      }
-      throw err;
+      lastError = `${modelName}: ${errMsg}`;
+      // Fallback adaptativo: Si falla por 404, 429, cuota o error temporal, probar el siguiente modelo
+      continue;
     }
   }
 
   throw new Error(`Google AI Studio error: ${lastError || 'No se pudo conectar a ningún modelo candidato'}`);
 }
+
+// ── Groq ──────────────────────────────────────────────────────────────────────
 
 async function* callGroq(
   prompt: string,
@@ -162,6 +174,7 @@ async function* callGroq(
       new Set(
         [
           configuredVision,
+          'qwen/qwen3.8-27b',
           'llama-3.2-11b-vision-preview',
           'llama-3.2-90b-vision-preview',
         ].filter(Boolean)
@@ -174,8 +187,9 @@ async function* callGroq(
       new Set(
         [
           configuredText,
-          'llama-3.3-70b-versatile',
+          'openai/gpt-oss-120b',
           'llama-3.1-8b-instant',
+          'llama-3.3-70b-versatile',
         ].filter(Boolean)
       )
     );
@@ -207,19 +221,48 @@ async function* callGroq(
       }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      lastError = errMsg;
-      if (
-        errMsg.includes('404') ||
-        errMsg.includes('does not exist') ||
-        errMsg.includes('model_not_found')
-      ) {
-        continue;
-      }
-      throw err;
+      lastError = `${modelName}: ${errMsg}`;
+      continue;
     }
   }
 
   throw new Error(`Groq error: ${lastError || 'No se pudo inicializar ningún modelo de Groq'}`);
+}
+
+// ── OpenRouter ────────────────────────────────────────────────────────────────
+
+let cachedOpenRouterFreeModels: string[] = [];
+let lastOpenRouterCacheTime = 0;
+
+async function getLiveOpenRouterFreeModels(): Promise<string[]> {
+  const now = Date.now();
+  if (cachedOpenRouterFreeModels.length > 0 && now - lastOpenRouterCacheTime < 15 * 60 * 1000) {
+    return cachedOpenRouterFreeModels;
+  }
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4000);
+    const res = await fetch('https://openrouter.ai/api/v1/models', { signal: controller.signal });
+    clearTimeout(timer);
+    if (res.ok) {
+      const data = (await res.json()) as {
+        data?: Array<{ id: string; pricing?: { prompt?: string; completion?: string } }>;
+      };
+      if (Array.isArray(data?.data)) {
+        cachedOpenRouterFreeModels = data.data
+          .filter(
+            (m) =>
+              m.id.endsWith(':free') ||
+              (m.pricing && m.pricing.prompt === '0' && m.pricing.completion === '0')
+          )
+          .map((m) => m.id);
+        lastOpenRouterCacheTime = now;
+      }
+    }
+  } catch {
+    // Si la llamada falla, conservar caché o lista estática
+  }
+  return cachedOpenRouterFreeModels;
 }
 
 async function* callOpenRouter(
@@ -232,18 +275,27 @@ async function* callOpenRouter(
   }
 
   const { modelName, history = [], isCode = false } = options;
+  const liveFree = await getLiveOpenRouterFreeModels();
 
   let candidateModels: string[];
   if (isCode) {
     const configuredCode = (process.env.OPENROUTER_CODE_MODEL || '').trim();
+    const dynamicCode = liveFree.filter(
+      (m) => m.includes('code') || m.includes('coder') || m.includes('gemma') || m.includes('nemotron')
+    );
     candidateModels = Array.from(
       new Set(
         [
           modelName || configuredCode,
-          'qwen/qwen-2.5-coder-32b-instruct:free',
-          'openrouter/auto-code',
           'openrouter/free',
           'openrouter/auto',
+          'google/gemma-4-31b-it:free',
+          'nvidia/nemotron-3.5-lightning:free',
+          'google/gemma-4-26b-a4b-it:free',
+          'nvidia/nemotron-3-ultra-550b-a55b:free',
+          'qwen/qwen-2.5-coder-32b-instruct:free',
+          ...dynamicCode,
+          ...liveFree,
         ].filter(Boolean)
       )
     );
@@ -255,8 +307,14 @@ async function* callOpenRouter(
           modelName || configuredFree,
           'openrouter/free',
           'openrouter/auto',
-          'meta-llama/llama-3.2-3b-instruct:free',
-          'mistralai/mistral-7b-instruct:free',
+          'google/gemma-4-31b-it:free',
+          'nvidia/nemotron-3.5-lightning:free',
+          'google/gemma-4-26b-a4b-it:free',
+          'inclusionai/ling-3.2-flash:free',
+          'baidu/ernie-5.5-flash-preview:free',
+          'nvidia/nemotron-3-ultra-550b-a55b:free',
+          'recursive/flint-v1.0:free',
+          ...liveFree,
         ].filter(Boolean)
       )
     );
@@ -299,7 +357,7 @@ async function* callOpenRouter(
 
       if (!response.ok || !response.body) {
         const errBody = await response.text().catch(() => '');
-        lastError = `HTTP ${response.status}: ${errBody.slice(0, 100)}`;
+        lastError = `${chosenModel} [HTTP ${response.status}: ${errBody.slice(0, 100)}]`;
         continue;
       }
 
@@ -322,9 +380,16 @@ async function* callOpenRouter(
           if (dataStr === '[DONE]') break;
           try {
             const parsed = JSON.parse(dataStr) as {
-              choices?: Array<{ delta?: { content?: string } }>;
+              choices?: Array<{
+                delta?: {
+                  content?: string;
+                  reasoning?: string;
+                  reasoning_content?: string;
+                };
+              }>;
             };
-            const token = parsed.choices?.[0]?.delta?.content || '';
+            const delta = parsed.choices?.[0]?.delta;
+            const token = delta?.content || delta?.reasoning || delta?.reasoning_content || '';
             if (token) {
               streamedAny = true;
               yield token;
@@ -339,7 +404,7 @@ async function* callOpenRouter(
         return;
       }
     } catch (err) {
-      lastError = err instanceof Error ? err.message : String(err);
+      lastError = `${chosenModel}: ${err instanceof Error ? err.message : String(err)}`;
       continue;
     }
   }
@@ -348,6 +413,8 @@ async function* callOpenRouter(
     `OpenRouter error: ${lastError || 'No se pudo conectar a ningún modelo candidato en OpenRouter'}`
   );
 }
+
+// ── Routing Engine ────────────────────────────────────────────────────────────
 
 export async function* routeAndStream(params: {
   prompt: string;
@@ -364,14 +431,14 @@ export async function* routeAndStream(params: {
 
   if (images && images.length > 0) {
     chain = [
-      ['Google AI Studio', () => callGemini(prompt, history, images)],
       ['Groq Vision', () => callGroq(prompt, history, images)],
+      ['Google AI Studio', () => callGemini(prompt, history, images)],
       ['OpenRouter Vision', () => callOpenRouter(prompt, { modelName: 'openrouter/free', history })],
     ];
   } else if (mode === 'code') {
     chain = [
-      ['OpenRouter Code', () => callOpenRouter(prompt, { isCode: true, history })],
       ['Google AI Studio', () => callGemini(prompt, history)],
+      ['OpenRouter Code', () => callOpenRouter(prompt, { isCode: true, history })],
       ['Groq', () => callGroq(prompt, history)],
     ];
   } else if (mode === 'speed') {
@@ -381,6 +448,7 @@ export async function* routeAndStream(params: {
       ['OpenRouter', () => callOpenRouter(prompt, { isCode: false, history })],
     ];
   } else {
+    // Mode 'auto' or 'reasoning': Google AI Studio -> Groq -> OpenRouter
     chain = [
       ['Google AI Studio', () => callGemini(prompt, history)],
       ['Groq', () => callGroq(prompt, history)],
