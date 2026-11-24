@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="description" content="Nova AI — Multi-Provider Intelligence Platform with Real-Time Routing">
+  <title>Nova AI — Multi-Provider Intelligence Engine</title>
+
+  <!-- Google Fonts: Inter & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+
+  <div class="app-shell">
+
+    <!-- ── Sidebar Izquierdo ──────────────────────────────────────────────── -->
+    <aside class="sidebar" id="sidebar" aria-label="Navegación e Historial">
+      <div class="sidebar-header">
+        <div class="brand-badge">
+          <div class="brand-icon">✦</div>
+          <span>Nova AI</span>
+        </div>
+      </div>
+
+      <button class="new-chat-btn" id="new-chat-btn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Nueva consulta
+      </button>
+
+      <div class="sidebar-content">
+        <div class="history-section-title">Historial Reciente</div>
+        <div class="history-list" id="history-list"></div>
+      </div>
+
+      <div class="sidebar-footer">
+        <span>v2.0 Multi-Router</span>
+        <span>Alexander L. 🇩🇴</span>
+      </div>
+    </aside>
+
+    <!-- ── Viewport Central (Chat) ────────────────────────────────────────── -->
+    <main class="chat-viewport">
+      <!-- Topbar -->
+      <header class="chat-topbar">
+        <div class="topbar-left">
+          <button class="menu-toggle-btn" id="menu-toggle-btn" aria-label="Abrir menú">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+          </button>
+          <div class="network-status-bar" role="status" aria-live="polite">
+            <div class="status-pill" id="pill-gemini" title="Canal Principal de Razonamiento">
+              <span class="status-dot gemini"></span> Gemini
+            </div>
+            <div class="status-pill" id="pill-groq" title="Canal Auxiliar de Ultra Baja Latencia">
+              <span class="status-dot groq"></span> Groq
+            </div>
+            <div class="status-pill" id="pill-router" title="Línea de Defensa y Código">
+              <span class="status-dot router"></span> OpenRouter
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <!-- Contenedor de Mensajes -->
+      <div class="messages-container" id="messages-container">
+        <div class="messages-wrapper" id="messages-wrapper">
+
+          <!-- Welcome Hero & Router Diagram -->
+          <div class="welcome-hero" id="welcome-hero">
+            <h1 class="welcome-title">Multi-Provider Intelligence</h1>
+            <p class="welcome-subtitle">
+              Orquestación resiliente de modelos en tiempo real. Si un canal satura o devuelve 429, Nova conmuta automáticamente sin detener la respuesta.
+            </p>
+
+            <!-- Diagrama visual de enrutamiento -->
+            <div class="router-diagram">
+              <div class="node-chip node-gemini">1. Gemini Flash</div>
+              <span style="color:var(--text-muted); font-size:12px">➔</span>
+              <div class="node-chip node-groq">2. Groq Llama 3</div>
+              <span style="color:var(--text-muted); font-size:12px">➔</span>
+              <div class="node-chip node-router">3. OpenRouter Free</div>
+            </div>
+
+            <!-- Tarjetas de Acceso Rápido -->
+            <div class="cards-grid">
+              <button class="action-card" data-prompt="Analiza las implicaciones de seguridad y arquitectura de un sistema multi-proveedor LLM con failover automático.">
+                <strong>🔬 Razonamiento Profundo</strong>
+                <span>Prioriza Google Gemini Flash</span>
+              </button>
+              <button class="action-card" data-prompt="Explica en 3 viñetas ultraconcisas qué es Server-Sent Events (SSE) y su ventaja sobre WebSockets.">
+                <strong>⚡ Respuesta Instantánea</strong>
+                <span>Prioriza Groq (~100ms)</span>
+              </button>
+              <button class="action-card" data-prompt="Escribe un middleware en FastAPI para sanitizar entradas y prevenir DoS con Pydantic v2.">
+                <strong>💻 Generador de Código</strong>
+                <span>Prioriza OpenRouter Code Engine</span>
+              </button>
+              <button class="action-card" data-prompt="Dame una síntesis ejecutiva sobre cómo mitigar ataques de Prompt Injection en producción.">
+                <strong>🛡️ Arquitectura y AppSec</strong>
+                <span>Enrutamiento Inteligente</span>
+              </button>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Input Dock Multimodal -->
+      <footer class="input-dock">
+        <div class="input-container">
+          <div class="input-row">
+            <input type="file" id="file-input" accept="image/*" multiple style="display:none">
+            <button class="btn-icon" id="attach-btn" title="Adjuntar imagen (máx 3)">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+            </button>
+
+            <select class="mode-selector" id="mode-selector" title="Seleccionar modo de enrutamiento">
+              <option value="auto">⚡ Auto Router</option>
+              <option value="reasoning">✦ Razonamiento (Gemini)</option>
+              <option value="speed">🏎️ Velocidad (Groq)</option>
+              <option value="code">💻 Código (OpenRouter)</option>
+            </select>
+
+            <textarea class="chat-textarea" id="chat-textarea" placeholder="Escribe tu instrucción técnica..." rows="1" maxlength="4000"></textarea>
+
+            <button class="send-btn" id="send-btn" disabled>
+              <span>Enviar</span>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9"/></svg>
+            </button>
+          </div>
+
+          <!-- Thumbnails de imágenes adjuntas -->
+          <div id="image-previews" style="display:flex; gap:8px; margin-top:8px;"></div>
+        </div>
+      </footer>
+    </main>
+
+    <!-- ── Panel Derecho (Telemetría Permanente) ──────────────────────────── -->
+    <aside class="telemetry-sidebar" aria-label="Telemetría de Red">
+      <div class="telemetry-header">
+        <span>📊 Red y Telemetría</span>
+      </div>
+
+      <div class="telemetry-content">
+        <!-- Distribución de Tráfico -->
+        <div class="metric-block">
+          <div class="metric-title">Distribución de Enrutamiento</div>
+          <div class="dist-bar">
+            <div class="dist-seg gemini" id="bar-gemini" style="width: 60%"></div>
+            <div class="dist-seg groq" id="bar-groq" style="width: 30%"></div>
+            <div class="dist-seg router" id="bar-router" style="width: 10%"></div>
+          </div>
+          <div style="display:flex; justify-content:space-between; font-size:0.72rem; color:var(--text-muted); font-family:var(--font-mono);">
+            <span style="color:var(--accent-gemini)" id="txt-gemini">Gemini 0%</span>
+            <span style="color:var(--accent-groq)" id="txt-groq">Groq 0%</span>
+            <span style="color:var(--accent-router)" id="txt-router">Router 0%</span>
+          </div>
+        </div>
+
+        <!-- Métricas Rápidas -->
+        <div class="metric-block">
+          <div class="metric-title">Métricas Globales</div>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; font-family:var(--font-mono); font-size:0.8rem;">
+            <div>
+              <div style="font-size:0.68rem; color:var(--text-muted);">Total Solicitudes</div>
+              <strong id="metric-requests">0</strong>
+            </div>
+            <div>
+              <div style="font-size:0.68rem; color:var(--text-muted);">Failovers Auto</div>
+              <strong style="color:var(--status-warn);" id="metric-failovers">0</strong>
+            </div>
+          </div>
+        </div>
+
+        <!-- Registro de Eventos en Vivo -->
+        <div class="metric-block" style="flex:1; display:flex; flex-direction:column;">
+          <div class="metric-title">Log de Conmutaciones</div>
+          <div class="event-feed" id="event-feed">
+            <div class="event-row">Sistema inicializado · Esperando consulta...</div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+  </div>
+
+  <!-- Scripts CDN con SRI -->
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js" integrity="sha384-eEu5CTj3qGvu9PdJuS+YlkNi7d2XxQROAFYOr59zgObtlcux1ae1Il3u7jvdCSWu" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@15.0.12/marked.min.js" integrity="sha384-948ahk4ZmxYVYOc+rxN1H2gM1EJ2Duhp7uHtZ4WSLkV4Vtx5MUqnV+l7u9B+jFv+" crossorigin="anonymous"></script>
+
+  <script src="/js/app.js"></script>
+</body>
+</html>
