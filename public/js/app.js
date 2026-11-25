@@ -51,6 +51,10 @@ const metricLatGemini = $('metric-lat-gemini');
 const metricLatGroq = $('metric-lat-groq');
 const eventFeed = $('event-feed');
 
+// ── Deleted Sessions Tombstone Manager (Persistencia en LocalStorage) ────────
+const DELETED_SESSIONS_KEY = 'nova_deleted_sessions';
+const SAFE_SESSION_ID_REGEX = /^chat_[a-zA-Z0-9_-]{4,64}$/;
+
 // Application State
 let isStreaming = false;
 let activeStreamController = null;
@@ -58,10 +62,6 @@ let attachedImages = [];
 let sessionsCache = [];
 let activeSessionId = getOrCreateSessionId();
 let noticeTimer = null;
-
-// ── Deleted Sessions Tombstone Manager (Persistencia en LocalStorage) ────────
-const DELETED_SESSIONS_KEY = 'nova_deleted_sessions';
-const SAFE_SESSION_ID_REGEX = /^chat_[a-zA-Z0-9_-]{4,64}$/;
 
 function getDeletedSessionIds() {
   try {
