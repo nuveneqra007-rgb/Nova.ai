@@ -9,23 +9,77 @@ export interface HistoryEntry {
 }
 
 export interface SessionSummary {
-  session_id: string; // ID individual del chat para el usuario
+  session_id: string;
   title: string;
   updated_at: string;
   message_count: number;
   last_provider: string;
 }
 
-const localHistory = new Map<string, HistoryEntry[]>();
-const deletedSessions = new Set<string>();
+const SAFE_ID_REGEX = /^[a-zA-Z0-9_-]{1,64}$/;
+const MAX_LOCAL_SESSIONS = 500;
+const MAX_DELETED_SESSIONS = 1000;
+const SESSION_TTL_MS = 2 * 60 * 60 * 1000;
+
+interface LocalSessionBucket {
+  entries: HistoryEntry[];
+  lastAccess: number;
+}
+
+const localHistory = new Map<string, LocalSessionBucket>();
+// Almacena únicamente compositeKeys (userId::sessionId) para aislar entre usuarios
+const deletedSessions = new Map<string, number>();
+
+export function isValidId(value: string): boolean {
+  return SAFE_ID_REGEX.test(value);
+}
+
+function sanitizeIdPart(value: string, fallback: string, maxLen: number): string {
+  const cleaned = (value || '')
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]/g, '_')
+    .slice(0, maxLen);
+  return cleaned || fallback;
+}
+
+function escapeLikePattern(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+}
+
+function pruneMemory(): void {
+  const now = Date.now();
+
+  for (const [key, bucket] of localHistory.entries()) {
+    if (now - bucket.lastAccess > SESSION_TTL_MS) {
+      localHistory.delete(key);
+    }
+  }
+  while (localHistory.size > MAX_LOCAL_SESSIONS) {
+    const oldestKey = localHistory.keys().next().value;
+    if (!oldestKey) break;
+    localHistory.delete(oldestKey);
+  }
+
+  for (const [key, ts] of deletedSessions.entries()) {
+    if (now - ts > SESSION_TTL_MS) {
+      deletedSessions.delete(key);
+    }
+  }
+  while (deletedSessions.size > MAX_DELETED_SESSIONS) {
+    const oldestKey = deletedSessions.keys().next().value;
+    if (!oldestKey) break;
+    deletedSessions.delete(oldestKey);
+  }
+}
 
 export function toCompositeSessionId(userId: string, sessionId: string): string {
-  const cleanUser = (userId || 'anonymous').trim().replace(/[:]/g, '_').slice(0, 48);
-  let cleanSession = (sessionId || 'default').trim().slice(0, 64);
-  if (cleanSession.includes('::')) {
-    const parts = cleanSession.split('::');
-    cleanSession = parts[parts.length - 1];
+  const cleanUser = sanitizeIdPart(userId, 'anonymous', 48);
+  let rawSession = (sessionId || 'default').trim();
+  if (rawSession.includes('::')) {
+    const parts = rawSession.split('::');
+    rawSession = parts[parts.length - 1];
   }
+  const cleanSession = sanitizeIdPart(rawSession, 'default', 64);
   return `${cleanUser}::${cleanSession}`;
 }
 
@@ -49,7 +103,7 @@ function getSupabaseConfig(): { url: string; key: string } | null {
 export function initDb(): void {
   const cfg = getSupabaseConfig();
   if (cfg) {
-    console.log(`[Supabase] Persistencia conectada a ${cfg.url}`);
+    console.log('[Supabase] Persistencia conectada.');
   } else {
     console.log('[Memory] Modo local en memoria activo (variables Supabase no detectadas).');
   }
@@ -75,7 +129,7 @@ export async function saveMessage(params: {
   const nowIso = new Date().toISOString();
 
   deletedSessions.delete(compositeKey);
-  deletedSessions.delete(params.sessionId);
+  pruneMemory();
 
   const data: HistoryEntry = {
     session_id: compositeKey,
@@ -87,42 +141,45 @@ export async function saveMessage(params: {
     created_at: nowIso,
   };
 
-  // 1. Guardar en memoria local aislada por usuario
-  const entries = localHistory.get(compositeKey) || [];
-  entries.push(data);
-  if (entries.length > 30) {
-    entries.shift();
+  const bucket = localHistory.get(compositeKey) || { entries: [], lastAccess: Date.now() };
+  bucket.entries.push(data);
+  if (bucket.entries.length > 30) {
+    bucket.entries.shift();
   }
-  localHistory.set(compositeKey, entries);
+  bucket.lastAccess = Date.now();
+  localHistory.delete(compositeKey);
+  localHistory.set(compositeKey, bucket);
 
-  // 2. Persistir en Supabase vía REST si está configurado
   const cfg = getSupabaseConfig();
   if (!cfg) return;
 
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 5000);
-    await fetch(`${cfg.url}/rest/v1/messages`, {
-      method: 'POST',
-      headers: {
-        apikey: cfg.key,
-        Authorization: `Bearer ${cfg.key}`,
-        'Content-Type': 'application/json',
-        Prefer: 'return=minimal',
-      },
-      body: JSON.stringify({
-        session_id: data.session_id,
-        message: data.message,
-        response: data.response,
-        provider: data.provider,
-        model: data.model,
-        latency_ms: data.latency_ms,
-      }),
-      signal: controller.signal,
-    });
-    clearTimeout(timer);
+    try {
+      await fetch(`${cfg.url}/rest/v1/messages`, {
+        method: 'POST',
+        headers: {
+          apikey: cfg.key,
+          Authorization: `Bearer ${cfg.key}`,
+          'Content-Type': 'application/json',
+          Prefer: 'return=minimal',
+        },
+        body: JSON.stringify({
+          session_id: data.session_id,
+          message: data.message,
+          response: data.response,
+          provider: data.provider,
+          model: data.model,
+          latency_ms: data.latency_ms,
+        }),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
   } catch (err) {
-    console.warn('[Supabase REST] Error al guardar mensaje:', err instanceof Error ? err.message : err);
+    console.warn('[Supabase REST] Error al guardar mensaje:', err instanceof Error ? err.name : 'Error');
   }
 }
 
@@ -132,7 +189,7 @@ export async function getHistory(
   limit = 20
 ): Promise<HistoryEntry[]> {
   const compositeKey = toCompositeSessionId(userId, sessionId);
-  if (deletedSessions.has(compositeKey) || deletedSessions.has(sessionId)) {
+  if (deletedSessions.has(compositeKey)) {
     return [];
   }
   const cfg = getSupabaseConfig();
@@ -141,30 +198,35 @@ export async function getHistory(
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 5000);
-      const queryUrl = `${cfg.url}/rest/v1/messages?select=message,response,provider,model,latency_ms&session_id=eq.${encodeURIComponent(compositeKey)}&order=id.desc&limit=${limit}`;
-      const res = await fetch(queryUrl, {
-        method: 'GET',
-        headers: {
-          apikey: cfg.key,
-          Authorization: `Bearer ${cfg.key}`,
-        },
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
-      if (res.ok) {
-        const data = (await res.json()) as HistoryEntry[];
-        if (Array.isArray(data) && data.length > 0) {
-          data.reverse();
-          return data;
+      try {
+        const queryUrl = `${cfg.url}/rest/v1/messages?select=message,response,provider,model,latency_ms&session_id=eq.${encodeURIComponent(compositeKey)}&order=id.desc&limit=${limit}`;
+        const res = await fetch(queryUrl, {
+          method: 'GET',
+          headers: {
+            apikey: cfg.key,
+            Authorization: `Bearer ${cfg.key}`,
+          },
+          signal: controller.signal,
+        });
+        if (res.ok) {
+          const data = (await res.json()) as HistoryEntry[];
+          if (Array.isArray(data) && data.length > 0) {
+            data.reverse();
+            return data;
+          }
         }
+      } finally {
+        clearTimeout(timer);
       }
     } catch (err) {
-      console.warn('[Supabase REST] Error al consultar historial:', err instanceof Error ? err.message : err);
+      console.warn('[Supabase REST] Error al consultar historial:', err instanceof Error ? err.name : 'Error');
     }
   }
 
-  const local = localHistory.get(compositeKey) || [];
-  return local.slice(-limit);
+  const bucket = localHistory.get(compositeKey);
+  if (!bucket) return [];
+  bucket.lastAccess = Date.now();
+  return bucket.entries.slice(-limit);
 }
 
 export async function getSessions(
@@ -172,81 +234,84 @@ export async function getSessions(
   query = '',
   limit = 40
 ): Promise<SessionSummary[]> {
-  const cleanUser = (userId || 'anonymous').trim().replace(/[:]/g, '_');
+  const cleanUser = sanitizeIdPart(userId, 'anonymous', 48);
   const userPrefix = `${cleanUser}::`;
   const sessionsMap = new Map<string, SessionSummary>();
 
-  // 1. Cargar sesiones locales filtradas ESTRICTAMENTE por este usuario y no eliminadas
-  for (const [key, entries] of localHistory.entries()) {
-    if (!key.startsWith(userPrefix) || entries.length === 0) continue;
-    const rawChatId = extractSessionId(key);
-    if (deletedSessions.has(key) || deletedSessions.has(rawChatId)) continue;
+  pruneMemory();
 
-    const first = entries[0];
-    const last = entries[entries.length - 1];
+  for (const [key, bucket] of localHistory.entries()) {
+    if (!key.startsWith(userPrefix) || bucket.entries.length === 0) continue;
+    if (deletedSessions.has(key)) continue;
+
+    const rawChatId = extractSessionId(key);
+    const first = bucket.entries[0];
+    const last = bucket.entries[bucket.entries.length - 1];
     sessionsMap.set(rawChatId, {
       session_id: rawChatId,
       title: buildTitle(first.message),
       updated_at: last.created_at || new Date().toISOString(),
-      message_count: entries.length,
+      message_count: bucket.entries.length,
       last_provider: last.provider || 'Unknown',
     });
   }
 
-  // 2. Complementar con Supabase buscando ÚNICAMENTE los registros de este usuario
   const cfg = getSupabaseConfig();
   if (cfg) {
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 5000);
-      const queryUrl = `${cfg.url}/rest/v1/messages?select=session_id,message,provider,created_at&session_id=like.${encodeURIComponent(userPrefix)}%25&order=id.desc&limit=200`;
-      const res = await fetch(queryUrl, {
-        method: 'GET',
-        headers: {
-          apikey: cfg.key,
-          Authorization: `Bearer ${cfg.key}`,
-        },
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
-      if (res.ok) {
-        const rows = (await res.json()) as Array<{
-          session_id?: string;
-          message?: string;
-          provider?: string;
-          created_at?: string;
-        }>;
-        if (Array.isArray(rows)) {
-          const grouped = new Map<string, typeof rows>();
-          for (const row of rows) {
-            const sid = row.session_id || '';
-            if (!sid.startsWith(userPrefix)) continue;
-            const chatId = extractSessionId(sid);
-            if (deletedSessions.has(sid) || deletedSessions.has(chatId)) continue;
-            const list = grouped.get(chatId) || [];
-            list.push(row);
-            grouped.set(chatId, list);
-          }
-          for (const [chatId, list] of grouped.entries()) {
-            if (deletedSessions.has(toCompositeSessionId(cleanUser, chatId)) || deletedSessions.has(chatId)) {
-              continue;
+      try {
+        const escapedPrefix = escapeLikePattern(userPrefix);
+        const queryUrl = `${cfg.url}/rest/v1/messages?select=session_id,message,provider,created_at&session_id=like.${encodeURIComponent(escapedPrefix)}%25&order=id.desc&limit=200`;
+        const res = await fetch(queryUrl, {
+          method: 'GET',
+          headers: {
+            apikey: cfg.key,
+            Authorization: `Bearer ${cfg.key}`,
+          },
+          signal: controller.signal,
+        });
+        if (res.ok) {
+          const rows = (await res.json()) as Array<{
+            session_id?: string;
+            message?: string;
+            provider?: string;
+            created_at?: string;
+          }>;
+          if (Array.isArray(rows)) {
+            const grouped = new Map<string, typeof rows>();
+            for (const row of rows) {
+              const sid = row.session_id || '';
+              if (!sid.startsWith(userPrefix)) continue;
+              if (deletedSessions.has(sid)) continue;
+              const chatId = extractSessionId(sid);
+              const list = grouped.get(chatId) || [];
+              list.push(row);
+              grouped.set(chatId, list);
             }
-            const newest = list[0];
-            const oldest = list[list.length - 1];
-            if (!sessionsMap.has(chatId)) {
-              sessionsMap.set(chatId, {
-                session_id: chatId,
-                title: buildTitle(oldest.message || ''),
-                updated_at: newest.created_at || new Date().toISOString(),
-                message_count: list.length,
-                last_provider: newest.provider || 'Unknown',
-              });
+            for (const [chatId, list] of grouped.entries()) {
+              const compId = toCompositeSessionId(cleanUser, chatId);
+              if (deletedSessions.has(compId)) continue;
+              const newest = list[0];
+              const oldest = list[list.length - 1];
+              if (!sessionsMap.has(chatId)) {
+                sessionsMap.set(chatId, {
+                  session_id: chatId,
+                  title: buildTitle(oldest.message || ''),
+                  updated_at: newest.created_at || new Date().toISOString(),
+                  message_count: list.length,
+                  last_provider: newest.provider || 'Unknown',
+                });
+              }
             }
           }
         }
+      } finally {
+        clearTimeout(timer);
       }
     } catch (err) {
-      console.warn('[Supabase REST] Error al listar sesiones del usuario:', err instanceof Error ? err.message : err);
+      console.warn('[Supabase REST] Error al listar sesiones del usuario:', err instanceof Error ? err.name : 'Error');
     }
   }
 
@@ -268,28 +333,30 @@ export async function getSessions(
 
 export async function deleteSession(userId: string, sessionId: string): Promise<boolean> {
   const compositeKey = toCompositeSessionId(userId, sessionId);
-  deletedSessions.add(compositeKey);
-  deletedSessions.add(sessionId);
+  deletedSessions.set(compositeKey, Date.now());
   localHistory.delete(compositeKey);
-  localHistory.delete(sessionId);
+  pruneMemory();
 
   const cfg = getSupabaseConfig();
   if (cfg) {
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 5000);
-      const deleteUrl = `${cfg.url}/rest/v1/messages?or=(session_id.eq.${encodeURIComponent(compositeKey)},session_id.eq.${encodeURIComponent(sessionId)})`;
-      await fetch(deleteUrl, {
-        method: 'DELETE',
-        headers: {
-          apikey: cfg.key,
-          Authorization: `Bearer ${cfg.key}`,
-        },
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
+      try {
+        const deleteUrl = `${cfg.url}/rest/v1/messages?session_id=eq.${encodeURIComponent(compositeKey)}`;
+        await fetch(deleteUrl, {
+          method: 'DELETE',
+          headers: {
+            apikey: cfg.key,
+            Authorization: `Bearer ${cfg.key}`,
+          },
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timer);
+      }
     } catch (err) {
-      console.warn('[Supabase REST] Error al eliminar sesión:', err instanceof Error ? err.message : err);
+      console.warn('[Supabase REST] Error al eliminar sesión:', err instanceof Error ? err.name : 'Error');
     }
   }
 
@@ -297,34 +364,39 @@ export async function deleteSession(userId: string, sessionId: string): Promise<
 }
 
 export async function clearAllUserSessions(userId: string): Promise<boolean> {
-  const cleanUser = (userId || 'anonymous').trim().replace(/[:]/g, '_');
+  const cleanUser = sanitizeIdPart(userId, 'anonymous', 48);
   const userPrefix = `${cleanUser}::`;
+  const now = Date.now();
 
   for (const key of Array.from(localHistory.keys())) {
     if (key.startsWith(userPrefix)) {
       localHistory.delete(key);
-      deletedSessions.add(key);
-      deletedSessions.add(extractSessionId(key));
+      deletedSessions.set(key, now);
     }
   }
+  pruneMemory();
 
   const cfg = getSupabaseConfig();
   if (cfg) {
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 5000);
-      const deleteUrl = `${cfg.url}/rest/v1/messages?session_id=like.${encodeURIComponent(userPrefix)}%25`;
-      await fetch(deleteUrl, {
-        method: 'DELETE',
-        headers: {
-          apikey: cfg.key,
-          Authorization: `Bearer ${cfg.key}`,
-        },
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
+      try {
+        const escapedPrefix = escapeLikePattern(userPrefix);
+        const deleteUrl = `${cfg.url}/rest/v1/messages?session_id=like.${encodeURIComponent(escapedPrefix)}%25`;
+        await fetch(deleteUrl, {
+          method: 'DELETE',
+          headers: {
+            apikey: cfg.key,
+            Authorization: `Bearer ${cfg.key}`,
+          },
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timer);
+      }
     } catch (err) {
-      console.warn('[Supabase REST] Error al vaciar historial:', err instanceof Error ? err.message : err);
+      console.warn('[Supabase REST] Error al vaciar historial:', err instanceof Error ? err.name : 'Error');
     }
   }
 

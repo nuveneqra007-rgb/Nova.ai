@@ -27,10 +27,37 @@ export interface RouterEvent {
   full_text?: string;
 }
 
+const SAFE_IMAGE_DATA_URL = /^data:(image\/(?:png|jpeg|jpg|webp|gif));base64,([A-Za-z0-9+/=]+)$/;
+
 function parseDataUrl(dataUrl: string): { mimeType: string; data: string } | null {
-  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+  const match = dataUrl.match(SAFE_IMAGE_DATA_URL);
   if (!match) return null;
   return { mimeType: match[1], data: match[2] };
+}
+
+function createLinkedController(
+  timeoutMs: number,
+  parentSignal?: AbortSignal
+): { controller: AbortController; cleanup: () => void } {
+  const controller = new AbortController();
+  const onParentAbort = () => controller.abort();
+  if (parentSignal) {
+    if (parentSignal.aborted) {
+      controller.abort();
+    } else {
+      parentSignal.addEventListener('abort', onParentAbort, { once: true });
+    }
+  }
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return {
+    controller,
+    cleanup: () => {
+      clearTimeout(timer);
+      if (parentSignal) {
+        parentSignal.removeEventListener('abort', onParentAbort);
+      }
+    },
+  };
 }
 
 function extractErrorMessage(raw: unknown): string {
@@ -52,7 +79,8 @@ function extractErrorMessage(raw: unknown): string {
 async function* callGemini(
   prompt: string,
   history: HistoryEntry[] = [],
-  images: string[] | null = null
+  images: string[] | null = null,
+  signal?: AbortSignal
 ): AsyncGenerator<string, void, unknown> {
   const apiKey = (process.env.GEMINI_API_KEY || '').trim();
   if (!apiKey) {
@@ -104,16 +132,16 @@ async function* callGemini(
   let streamedAny = false;
 
   for (const modelName of candidateModels) {
+    if (signal?.aborted) break;
+    const { controller, cleanup } = createLinkedController(35000, signal);
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 35000);
-
-      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelName)}:streamGenerateContent?key=${encodeURIComponent(apiKey)}&alt=sse`;
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelName)}:streamGenerateContent?alt=sse`;
 
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey,
         },
         body: JSON.stringify({
           contents,
@@ -126,8 +154,6 @@ async function* callGemini(
         }),
         signal: controller.signal,
       });
-
-      clearTimeout(timer);
 
       if (!response.ok || !response.body) {
         const errBody = await response.text().catch(() => '');
@@ -189,6 +215,8 @@ async function* callGemini(
       const parsedErr = extractErrorMessage(err);
       lastError = `${modelName}: ${parsedErr}`;
       continue;
+    } finally {
+      cleanup();
     }
   }
 
@@ -200,7 +228,8 @@ async function* callGemini(
 async function* callGroq(
   prompt: string,
   history: HistoryEntry[] = [],
-  images: string[] | null = null
+  images: string[] | null = null,
+  signal?: AbortSignal
 ): AsyncGenerator<string, void, unknown> {
   const apiKey = (process.env.GROQ_API_KEY || '').trim();
   if (!apiKey) {
@@ -233,7 +262,9 @@ async function* callGroq(
       { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }
     > = [{ type: 'text', text: prompt }];
     for (const img of images.slice(0, 3)) {
-      contentParts.push({ type: 'image_url', image_url: { url: img } });
+      if (parseDataUrl(img)) {
+        contentParts.push({ type: 'image_url', image_url: { url: img } });
+      }
     }
     messages.push({ role: 'user', content: contentParts });
 
@@ -267,14 +298,19 @@ async function* callGroq(
   let streamedAny = false;
 
   for (const modelName of candidateModels) {
+    if (signal?.aborted) break;
+    const { controller, cleanup } = createLinkedController(35000, signal);
     try {
-      const completion = await client.chat.completions.create({
-        model: modelName,
-        messages: messages as Parameters<typeof client.chat.completions.create>[0]['messages'],
-        temperature: 0.7,
-        max_tokens: maxTokens,
-        stream: true,
-      });
+      const completion = await client.chat.completions.create(
+        {
+          model: modelName,
+          messages: messages as Parameters<typeof client.chat.completions.create>[0]['messages'],
+          temperature: 0.7,
+          max_tokens: maxTokens,
+          stream: true,
+        },
+        { signal: controller.signal }
+      );
 
       for await (const chunk of completion) {
         const text = chunk.choices?.[0]?.delta?.content || '';
@@ -291,6 +327,8 @@ async function* callGroq(
       const errMsg = extractErrorMessage(err);
       lastError = `${modelName}: ${errMsg}`;
       continue;
+    } finally {
+      cleanup();
     }
   }
 
@@ -335,14 +373,14 @@ async function getLiveOpenRouterFreeModels(): Promise<string[]> {
 
 async function* callOpenRouter(
   prompt: string,
-  options: { modelName?: string; history?: HistoryEntry[]; isCode?: boolean } = {}
+  options: { modelName?: string; history?: HistoryEntry[]; isCode?: boolean; signal?: AbortSignal } = {}
 ): AsyncGenerator<string, void, unknown> {
   const apiKey = (process.env.OPENROUTER_API_KEY || '').trim();
   if (!apiKey) {
     throw new Error('OPENROUTER_API_KEY no configurada');
   }
 
-  const { modelName, history = [], isCode = false } = options;
+  const { modelName, history = [], isCode = false, signal } = options;
   const liveFree = await getLiveOpenRouterFreeModels();
 
   let candidateModels: string[];
@@ -400,15 +438,14 @@ async function* callOpenRouter(
   let streamedAny = false;
 
   for (const chosenModel of candidateModels) {
+    if (signal?.aborted) break;
+    const { controller, cleanup } = createLinkedController(35000, signal);
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 35000);
-
       const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${apiKey}`,
-          'HTTP-Referer': 'https://nova-ai.vercel.app',
+          'HTTP-Referer': 'https://novaai-bay.vercel.app',
           'X-Title': 'Nova AI',
           'Content-Type': 'application/json',
         },
@@ -420,7 +457,6 @@ async function* callOpenRouter(
         }),
         signal: controller.signal,
       });
-      clearTimeout(timer);
 
       if (!response.ok || !response.body) {
         const errBody = await response.text().catch(() => '');
@@ -482,6 +518,8 @@ async function* callOpenRouter(
       const errMsg = extractErrorMessage(err);
       lastError = `${chosenModel}: ${errMsg}`;
       continue;
+    } finally {
+      cleanup();
     }
   }
 
@@ -495,8 +533,9 @@ export async function* routeAndStream(params: {
   mode?: string;
   history?: HistoryEntry[];
   images?: string[] | null;
+  signal?: AbortSignal;
 }): AsyncGenerator<RouterEvent, void, unknown> {
-  const { prompt, mode = 'auto', history = [], images = null } = params;
+  const { prompt, mode = 'auto', history = [], images = null, signal } = params;
   const failoverLog: Array<{ from_provider: string; error: string; latency_ms: number }> = [];
   const startTime = Date.now();
 
@@ -505,28 +544,28 @@ export async function* routeAndStream(params: {
 
   if (images && images.length > 0) {
     chain = [
-      ['Groq Vision', () => callGroq(prompt, history, images)],
-      ['Google AI Studio', () => callGemini(prompt, history, images)],
-      ['OpenRouter Vision', () => callOpenRouter(prompt, { modelName: 'openrouter/free', history })],
+      ['Groq Vision', () => callGroq(prompt, history, images, signal)],
+      ['Google AI Studio', () => callGemini(prompt, history, images, signal)],
+      ['OpenRouter Vision', () => callOpenRouter(prompt, { modelName: 'openrouter/free', history, signal })],
     ];
   } else if (mode === 'code') {
     chain = [
-      ['Google AI Studio', () => callGemini(prompt, history)],
-      ['OpenRouter Code', () => callOpenRouter(prompt, { isCode: true, history })],
-      ['Groq', () => callGroq(prompt, history)],
+      ['Google AI Studio', () => callGemini(prompt, history, null, signal)],
+      ['OpenRouter Code', () => callOpenRouter(prompt, { isCode: true, history, signal })],
+      ['Groq', () => callGroq(prompt, history, null, signal)],
     ];
   } else if (mode === 'speed') {
     chain = [
-      ['Groq', () => callGroq(prompt, history)],
-      ['Google AI Studio', () => callGemini(prompt, history)],
-      ['OpenRouter', () => callOpenRouter(prompt, { isCode: false, history })],
+      ['Groq', () => callGroq(prompt, history, null, signal)],
+      ['Google AI Studio', () => callGemini(prompt, history, null, signal)],
+      ['OpenRouter', () => callOpenRouter(prompt, { isCode: false, history, signal })],
     ];
   } else {
     // Mode 'auto' or 'reasoning': Google AI Studio -> Groq -> OpenRouter
     chain = [
-      ['Google AI Studio', () => callGemini(prompt, history)],
-      ['Groq', () => callGroq(prompt, history)],
-      ['OpenRouter', () => callOpenRouter(prompt, { isCode: false, history })],
+      ['Google AI Studio', () => callGemini(prompt, history, null, signal)],
+      ['Groq', () => callGroq(prompt, history, null, signal)],
+      ['OpenRouter', () => callOpenRouter(prompt, { isCode: false, history, signal })],
     ];
   }
 
@@ -535,6 +574,7 @@ export async function* routeAndStream(params: {
   let fullResponseText = '';
 
   for (let i = 0; i < chain.length; i++) {
+    if (signal?.aborted) break;
     const [providerName, providerCallable] = chain[i];
     const provStart = Date.now();
     try {
@@ -542,6 +582,7 @@ export async function* routeAndStream(params: {
 
       let firstChunk = true;
       for await (const chunk of providerCallable()) {
+        if (signal?.aborted) break;
         if (firstChunk) {
           activeProvider = providerName;
           firstChunk = false;
@@ -549,6 +590,8 @@ export async function* routeAndStream(params: {
         fullResponseText += chunk;
         yield { type: 'chunk', text: chunk, provider: providerName };
       }
+
+      if (signal?.aborted) break;
 
       if (!firstChunk) {
         streamSuccessful = true;
@@ -558,26 +601,35 @@ export async function* routeAndStream(params: {
       }
       throw new Error(`${providerName} no devolvió contenido`);
     } catch (err) {
+      if (signal?.aborted) break;
       const errMsg = extractErrorMessage(err);
+      const safeReason = errMsg.includes('429')
+        ? 'Límite de cuota (429)'
+        : errMsg.toLowerCase().includes('abort') || errMsg.toLowerCase().includes('timeout')
+        ? 'Tiempo de espera agotado'
+        : 'Incidencia temporal del proveedor';
       const failoverLatency = Date.now() - provStart;
+      console.warn(`[Router] Fallo en ${providerName} (${failoverLatency}ms): ${errMsg}`);
       failoverLog.push({
         from_provider: providerName,
-        error: errMsg,
+        error: safeReason,
         latency_ms: failoverLatency,
       });
 
       if (i + 1 < chain.length) {
         const nextProv = chain[i + 1][0];
-        telemetry.recordFailover(providerName, nextProv, errMsg.slice(0, 50), failoverLatency);
+        telemetry.recordFailover(providerName, nextProv, safeReason, failoverLatency);
         yield {
           type: 'failover',
           from_provider: providerName,
           to_provider: nextProv,
-          reason: errMsg.slice(0, 60),
+          reason: safeReason,
         };
       }
     }
   }
+
+  if (signal?.aborted) return;
 
   const totalLatencyMs = Date.now() - startTime;
 
@@ -586,7 +638,6 @@ export async function* routeAndStream(params: {
       type: 'error',
       message:
         'Todos los proveedores se encuentran temporalmente agotados o con límite de cuota (429/5xx).',
-      details: failoverLog,
       retry_seconds: 60,
     };
   } else {

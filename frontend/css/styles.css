@@ -1008,6 +1008,10 @@ html, body {
   animation: shimmer 1.5s infinite;
 }
 
+.skeleton-w-82 { width: 82%; }
+.skeleton-w-64 { width: 64%; }
+.skeleton-w-44 { width: 44%; }
+
 @keyframes shimmer {
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }

@@ -53,42 +53,30 @@ const eventFeed = $('event-feed');
 
 // Application State
 let isStreaming = false;
+let activeStreamController = null;
 let attachedImages = [];
 let sessionsCache = [];
 let activeSessionId = getOrCreateSessionId();
 let noticeTimer = null;
 
-// ── User & Session Management (Aislamiento individual por usuario) ───────────
-function getOrCreateUserId() {
-  let uid = localStorage.getItem('nova_user_id');
-  if (!uid || !uid.startsWith('usr_')) {
-    const rand = typeof crypto !== 'undefined' && crypto.getRandomValues
-      ? Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join('')
-      : Math.random().toString(36).slice(2, 14);
-    uid = `usr_${rand}`;
-    localStorage.setItem('nova_user_id', uid);
-  }
-  return uid;
-}
-
-const currentUserId = getOrCreateUserId();
-
 // ── Deleted Sessions Tombstone Manager (Persistencia en LocalStorage) ────────
 const DELETED_SESSIONS_KEY = 'nova_deleted_sessions';
+const SAFE_SESSION_ID_REGEX = /^chat_[a-zA-Z0-9_-]{4,64}$/;
 
 function getDeletedSessionIds() {
   try {
     const raw = localStorage.getItem(DELETED_SESSIONS_KEY);
     if (!raw) return new Set();
     const arr = JSON.parse(raw);
-    return new Set(Array.isArray(arr) ? arr : []);
+    if (!Array.isArray(arr)) return new Set();
+    return new Set(arr.filter((id) => typeof id === 'string' && SAFE_SESSION_ID_REGEX.test(id)));
   } catch {
     return new Set();
   }
 }
 
 function markSessionDeleted(sid) {
-  if (!sid) return;
+  if (!sid || !SAFE_SESSION_ID_REGEX.test(sid)) return;
   const set = getDeletedSessionIds();
   set.add(sid);
   try {
@@ -102,11 +90,6 @@ function isSessionDeleted(sid) {
   return getDeletedSessionIds().has(sid);
 }
 
-function getDeletedSessionsHeader() {
-  const arr = Array.from(getDeletedSessionIds()).slice(-30);
-  return arr.join(',');
-}
-
 function generateSessionId() {
   const rand = typeof crypto !== 'undefined' && crypto.getRandomValues
     ? Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join('')
@@ -116,7 +99,7 @@ function generateSessionId() {
 
 function getOrCreateSessionId() {
   let sid = localStorage.getItem('nova_active_chat_id') || localStorage.getItem('nova_session_id');
-  if (!sid || isSessionDeleted(sid)) {
+  if (!sid || !SAFE_SESSION_ID_REGEX.test(sid) || isSessionDeleted(sid)) {
     sid = generateSessionId();
     localStorage.setItem('nova_active_chat_id', sid);
   }
@@ -215,29 +198,49 @@ chatTextarea.addEventListener('keydown', (e) => {
   }
 });
 
+const ALLOWED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+const SAFE_IMAGE_DATA_URL = /^data:image\/(png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=]+$/;
+const MAX_IMAGE_BYTES = 2 * 1024 * 1024; // 2 MB por imagen
+
+async function processImageFiles(files) {
+  if (attachedImages.length + files.length > 3) {
+    showDockNotice('Máximo 3 imágenes permitidas por solicitud.');
+    return;
+  }
+  for (const file of files) {
+    if (!ALLOWED_IMAGE_TYPES.has(file.type)) {
+      showDockNotice(`Formato no permitido (${file.type || 'desconocido'}). Usa PNG, JPEG, WEBP o GIF.`);
+      continue;
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      showDockNotice(`La imagen "${file.name || 'adjunta'}" supera el límite de 2 MB.`);
+      continue;
+    }
+    try {
+      const b64 = await toBase64(file);
+      if (typeof b64 === 'string' && SAFE_IMAGE_DATA_URL.test(b64)) {
+        attachedImages.push(b64);
+      } else {
+        showDockNotice('No se pudo validar el contenido de la imagen.');
+      }
+    } catch {
+      showDockNotice('Error al leer la imagen adjunta.');
+    }
+  }
+  renderImagePreviews();
+}
+
 chatTextarea.addEventListener('paste', async (e) => {
   const clipboardData = e.clipboardData;
   if (!clipboardData) return;
   const items = Array.from(clipboardData.items || []);
   const imageFiles = items
-    .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+    .filter((item) => item.kind === 'file' && ALLOWED_IMAGE_TYPES.has(item.type))
     .map((item) => item.getAsFile())
     .filter(Boolean);
 
   if (imageFiles.length > 0) {
-    if (attachedImages.length + imageFiles.length > 3) {
-      showDockNotice('Máximo 3 imágenes permitidas por solicitud.');
-      return;
-    }
-    for (const file of imageFiles) {
-      if (file.size > 20 * 1024 * 1024) {
-        showDockNotice('La imagen supera el límite de 20 MB.');
-        continue;
-      }
-      const b64 = await toBase64(file);
-      attachedImages.push(b64);
-    }
-    renderImagePreviews();
+    await processImageFiles(imageFiles);
   }
 });
 
@@ -255,21 +258,9 @@ attachBtn.addEventListener('click', () => fileInput.click());
 
 fileInput.addEventListener('change', async (e) => {
   const files = Array.from(e.target.files || []);
-  if (attachedImages.length + files.length > 3) {
-    showDockNotice('Máximo 3 imágenes permitidas por solicitud.');
-    fileInput.value = '';
-    return;
+  if (files.length > 0) {
+    await processImageFiles(files);
   }
-
-  for (const file of files) {
-    if (file.size > 20 * 1024 * 1024) {
-      showDockNotice(`La imagen "${file.name}" supera el límite de 20 MB.`);
-      continue;
-    }
-    const b64 = await toBase64(file);
-    attachedImages.push(b64);
-  }
-  renderImagePreviews();
   fileInput.value = '';
 });
 
@@ -316,12 +307,26 @@ function renderImagePreviews() {
 }
 
 // ── Markdown, Sanitization & Copyable Code Blocks ────────────────────────────
+if (typeof DOMPurify !== 'undefined' && typeof DOMPurify.addHook === 'function') {
+  DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+    if (node.tagName === 'A') {
+      node.setAttribute('target', '_blank');
+      node.setAttribute('rel', 'noopener noreferrer');
+    }
+  });
+}
+
 function sanitizeMarkdown(text) {
-  if (typeof marked !== 'undefined') {
-    const raw = marked.parse(text);
-    return typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(raw) : raw;
+  const safeText = String(text ?? '');
+  // Fail-closed: solo renderizar Markdown si tanto marked como DOMPurify están disponibles
+  if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
+    const raw = marked.parse(safeText);
+    return DOMPurify.sanitize(raw, {
+      ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
+      FORBID_TAGS: ['style', 'form', 'input', 'textarea', 'select', 'button', 'iframe', 'object', 'embed', 'img'],
+    });
   }
-  return escapeHTML(text);
+  return escapeHTML(safeText);
 }
 
 function escapeHTML(str) {
@@ -454,9 +459,9 @@ function createAssistantBubble({ initialProvider = 'Conectando...', initialLaten
   if (!isStatic) {
     contentEl.innerHTML = `
       <div class="skeleton-loader">
-        <div class="skeleton-line" style="width: 82%"></div>
-        <div class="skeleton-line" style="width: 64%"></div>
-        <div class="skeleton-line" style="width: 44%"></div>
+        <div class="skeleton-line skeleton-w-82"></div>
+        <div class="skeleton-line skeleton-w-64"></div>
+        <div class="skeleton-line skeleton-w-44"></div>
       </div>
     `;
   }
@@ -513,19 +518,19 @@ async function handleSend() {
   scrollToBottom();
 
   try {
+    activeStreamController = new AbortController();
     const response = await fetch('/api/chat', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-user-id': currentUserId,
       },
       body: JSON.stringify({
         message: promptText,
         mode: modeSelector.value,
         session_id: activeSessionId,
-        user_id: currentUserId,
         images: sentImages.length > 0 ? sentImages : null,
       }),
+      signal: activeStreamController.signal,
     });
 
     if (!response.ok || !response.body) {
@@ -589,14 +594,18 @@ async function handleSend() {
 
     await fetchSessions(sessionSearchInput.value);
     fetchTelemetry();
-  } catch {
+  } catch (err) {
+    if (err && err.name === 'AbortError') {
+      return;
+    }
     contentEl.innerHTML =
       '<div class="error-inline">Error de conexión con el motor Nova. Verifica tu red o la disponibilidad del servidor.</div>';
+  } finally {
+    activeStreamController = null;
+    isStreaming = false;
+    updateSendButtonState();
+    scrollToBottom();
   }
-
-  isStreaming = false;
-  updateSendButtonState();
-  scrollToBottom();
 }
 
 // ── Typewriter Welcome Effect ────────────────────────────────────────────────
@@ -660,6 +669,13 @@ function stopTypewriter() {
 
 // ── Session History (Individual por usuario + Búsqueda en vivo) ──────────────
 function startNewChat() {
+  if (activeStreamController) {
+    activeStreamController.abort();
+    activeStreamController = null;
+  }
+  isStreaming = false;
+  updateSendButtonState();
+
   const newSid = generateSessionId();
   setActiveSession(newSid, 'Nueva consulta');
   messagesWrapper.innerHTML = '';
@@ -710,10 +726,6 @@ if (clearHistoryBtn) {
     try {
       await fetch('/api/sessions', {
         method: 'DELETE',
-        headers: {
-          'x-user-id': currentUserId,
-          'x-deleted-sessions': getDeletedSessionsHeader(),
-        },
       });
     } catch {
       // Ignorar fallo puntual
@@ -732,12 +744,7 @@ sessionSearchInput.addEventListener('input', () => {
 async function fetchSessions(query = '') {
   try {
     const qs = query.trim() ? `?q=${encodeURIComponent(query.trim())}` : '';
-    const res = await fetch(`/api/sessions${qs}`, {
-      headers: {
-        'x-user-id': currentUserId,
-        'x-deleted-sessions': getDeletedSessionsHeader(),
-      },
-    });
+    const res = await fetch(`/api/sessions${qs}`);
     if (!res.ok) return;
     const data = await res.json();
     const rawSessions = Array.isArray(data.sessions) ? data.sessions : [];
@@ -827,10 +834,6 @@ async function deleteChatSession(sid) {
   try {
     await fetch(`/api/sessions/${encodeURIComponent(sid)}`, {
       method: 'DELETE',
-      headers: {
-        'x-user-id': currentUserId,
-        'x-deleted-sessions': getDeletedSessionsHeader(),
-      },
     });
   } catch (err) {
     console.warn('[Session] Error notificando eliminación:', err);
@@ -848,12 +851,7 @@ async function loadSessionHistory(sess) {
   }
 
   try {
-    const res = await fetch(`/api/history?session_id=${encodeURIComponent(sess.session_id)}`, {
-      headers: {
-        'x-user-id': currentUserId,
-        'x-deleted-sessions': getDeletedSessionsHeader(),
-      },
-    });
+    const res = await fetch(`/api/history?session_id=${encodeURIComponent(sess.session_id)}`);
     if (!res.ok) return;
     const data = await res.json();
     const entries = Array.isArray(data.history) ? data.history : [];
